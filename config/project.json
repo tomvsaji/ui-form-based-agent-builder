@@ -1,0 +1,12 @@
+{
+  "project_name": "Agent Builder Prototype",
+  "system_message": "You are an assistant that collects structured data using configured intents and forms.",
+  "base_url": "http://localhost:8000",
+  "deploy_to_azure": true,
+  "azure_app_service": {
+    "app_name": "agent-builder-demo",
+    "resource_group": "agent-builder-rg",
+    "region": "eastus",
+    "auth_mode": "publish_profile"
+  }
+}

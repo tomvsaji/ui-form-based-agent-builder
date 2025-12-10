@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# FastAPI artifacts
+*.sqlite3
+
+# Node/Next frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/.env.local
+frontend/.env.*.local
+
+# OS / editor
+.DS_Store
+*.swp
+*.log
+
+# Bytecode and coverage
+*.coverage
+.coverage.*
+coverage.xml
+
+# Docker
+*.tar

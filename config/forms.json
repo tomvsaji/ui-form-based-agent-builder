@@ -1,0 +1,183 @@
+{
+  "intents": [
+    {
+      "id": "loan_intent",
+      "name": "Loan application",
+      "description": "When the user wants to apply for a personal loan or check eligibility.",
+      "target_form": "loan_form"
+    },
+    {
+      "id": "support_intent",
+      "name": "Support ticket",
+      "description": "When the user needs help or wants to file a support issue.",
+      "target_form": "support_form"
+    },
+    {
+      "id": "intent_1765382260976",
+      "name": "Book ticket",
+      "description": "Book airline ticket for travel.",
+      "target_form": "form_1765382298710"
+    }
+  ],
+  "forms": [
+    {
+      "id": "loan_form",
+      "name": "Loan Request",
+      "description": "Collect borrower details to submit a loan application.",
+      "submission_url": "https://api.example.com/loan/submit",
+      "mode": "step-by-step",
+      "field_order": [
+        "full_name",
+        "email",
+        "amount",
+        "income",
+        "credit_score",
+        "employment_status",
+        "consent"
+      ],
+      "fields": [
+        {
+          "name": "full_name",
+          "label": "Full name",
+          "type": "text",
+          "required": true,
+          "min_length": 3
+        },
+        {
+          "name": "email",
+          "label": "Email address",
+          "type": "text",
+          "required": true,
+          "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+        },
+        {
+          "name": "amount",
+          "label": "Requested amount",
+          "type": "number",
+          "required": true,
+          "minimum": 1000,
+          "maximum": 50000
+        },
+        {
+          "name": "income",
+          "label": "Annual income",
+          "type": "number",
+          "required": true,
+          "minimum": 20000
+        },
+        {
+          "name": "credit_score",
+          "label": "Credit score",
+          "type": "number",
+          "required": false,
+          "minimum": 300,
+          "maximum": 850,
+          "llm_validation_prompt": "If provided, ensure this is a realistic credit score between 300 and 850."
+        },
+        {
+          "name": "employment_status",
+          "label": "Employment status",
+          "type": "dropdown",
+          "required": true,
+          "dropdown_options": [
+            "employed",
+            "self-employed",
+            "unemployed",
+            "student",
+            "retired"
+          ]
+        },
+        {
+          "name": "consent",
+          "label": "Do you agree to a credit check?",
+          "type": "boolean",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "support_form",
+      "name": "Support Ticket",
+      "description": "Capture support issues in one message.",
+      "mode": "one-shot",
+      "field_order": [
+        "category",
+        "summary",
+        "details",
+        "priority"
+      ],
+      "fields": [
+        {
+          "name": "category",
+          "label": "Category",
+          "type": "dropdown",
+          "required": true,
+          "dropdown_options": [
+            "billing",
+            "technical",
+            "account",
+            "other"
+          ]
+        },
+        {
+          "name": "summary",
+          "label": "Short summary",
+          "type": "text",
+          "required": true,
+          "min_length": 5,
+          "max_length": 120
+        },
+        {
+          "name": "details",
+          "label": "Detailed description",
+          "type": "text",
+          "required": true,
+          "min_length": 10
+        },
+        {
+          "name": "priority",
+          "label": "Priority",
+          "type": "dropdown",
+          "required": true,
+          "dropdown_options": [
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "form_1765382298710",
+      "name": "Book Airline",
+      "description": "Get travel details to book tickets for the user.",
+      "mode": "step-by-step",
+      "field_order": [
+        "field_1765382369925",
+        "field_1765382438691",
+        "field_1765382413342"
+      ],
+      "fields": [
+        {
+          "name": "field_1765382369925",
+          "label": "Departing date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "name": "field_1765382413342",
+          "label": "Travelling Members",
+          "type": "text",
+          "required": true
+        },
+        {
+          "name": "field_1765382438691",
+          "label": "Return date",
+          "type": "date",
+          "required": false
+        }
+      ],
+      "submission_url": ""
+    }
+  ]
+}
