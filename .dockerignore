@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+
+# Frontend build and deps
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/.env.local
+frontend/.env.*.local
+
+# Git and OS noise
+.git
+.gitignore
+.DS_Store
+*.log
+
+# Coverage and test artifacts
+.coverage*
+*.coverage
+coverage.xml

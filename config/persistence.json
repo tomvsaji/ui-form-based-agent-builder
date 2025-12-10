@@ -1,0 +1,9 @@
+{
+  "enable_cosmos": true,
+  "use_managed_identity": false,
+  "cosmos_account_uri": "https://your-account.documents.azure.com:443/",
+  "cosmos_key": "YOUR-COSMOS-KEY",
+  "database": "agentdb",
+  "container": "threads",
+  "partition_key": "/thread_id"
+}

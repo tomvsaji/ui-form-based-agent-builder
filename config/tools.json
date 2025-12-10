@@ -1,0 +1,42 @@
+{
+  "tools": [
+    {
+      "name": "credit_score_check",
+      "description": "Validate credit score and eligibility against policy.",
+      "http_method": "POST",
+      "url": "https://api.example.com/credit/check",
+      "headers": {
+        "x-api-key": "{{CREDIT_API_KEY}}"
+      },
+      "body_schema": {
+        "full_name": "string",
+        "income": "number",
+        "credit_score": "number"
+      },
+      "auth": "api_key",
+      "role": "pre-submit-validator"
+    },
+    {
+      "name": "loan_submitter",
+      "description": "Submit loan applications.",
+      "http_method": "POST",
+      "url": "https://api.example.com/loan/submit",
+      "auth": "none",
+      "role": "submit-form"
+    },
+    {
+      "name": "ticket_submitter",
+      "description": "Submit support tickets to backend.",
+      "http_method": "POST",
+      "url": "https://api.example.com/support/tickets",
+      "auth": "bearer",
+      "role": "submit-form",
+      "body_schema": {
+        "category": "string",
+        "summary": "string",
+        "details": "string",
+        "priority": "string"
+      }
+    }
+  ]
+}
