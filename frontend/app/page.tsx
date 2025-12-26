@@ -52,6 +52,17 @@ type ProjectConfig = {
   } | null;
 };
 
+type KnowledgeBaseConfig = {
+  enable_knowledge_base: boolean;
+  provider: "azure_ai_search" | "none";
+  endpoint?: string | null;
+  api_key?: string | null;
+  index_name?: string | null;
+  retrieval_mode: "single-pass" | "agentic";
+  max_agentic_passes: number;
+  use_semantic_ranker: boolean;
+};
+
 type FormsConfig = { intents: Intent[]; forms: Form[] };
 type ToolsConfig = { tools: Tool[] };
 type PersistenceConfig = {
@@ -62,6 +73,10 @@ type PersistenceConfig = {
   database?: string | null;
   container?: string | null;
   partition_key?: string | null;
+  enable_semantic_cache: boolean;
+  redis_connection_string?: string | null;
+  redis_password?: string | null;
+  semantic_ttl_seconds: number;
 };
 type LoggingConfig = { emit_trace_logs: boolean; mode: "console" | "file" | "appinsights"; level: "DEBUG" | "INFO" | "WARNING" | "ERROR" };
 
@@ -71,6 +86,7 @@ export default function Home() {
   const [toolsCfg, setToolsCfg] = useState<ToolsConfig | null>(null);
   const [persistence, setPersistence] = useState<PersistenceConfig | null>(null);
   const [loggingCfg, setLoggingCfg] = useState<LoggingConfig | null>(null);
+  const [knowledgeCfg, setKnowledgeCfg] = useState<KnowledgeBaseConfig | null>(null);
   const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -83,8 +99,8 @@ export default function Home() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [p, f, t, s, l] = await Promise.all(
-        ["project", "forms", "tools", "persistence", "logging"].map((name) =>
+      const [p, f, t, s, l, k] = await Promise.all(
+        ["project", "forms", "tools", "persistence", "logging", "knowledge"].map((name) =>
           fetch(`${API_BASE}/config/${name}`).then((r) => r.json())
         )
       );
@@ -93,6 +109,7 @@ export default function Home() {
       setToolsCfg(t);
       setPersistence(s);
       setLoggingCfg(l);
+      setKnowledgeCfg(k);
       setSelectedFormId(f.forms?.[0]?.id || null);
       setMessage("Loaded configs.");
     } catch (err) {
@@ -123,6 +140,7 @@ export default function Home() {
       await saveConfig("tools", toolsCfg);
       await saveConfig("persistence", persistence);
       await saveConfig("logging", loggingCfg);
+      await saveConfig("knowledge", knowledgeCfg);
       setMessage("Saved all configs.");
     } catch (err) {
       setMessage(`Save failed: ${String(err)}`);
@@ -292,6 +310,9 @@ export default function Home() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <a className="btn secondary" href="/chat">
+            Chat tester
+          </a>
           <button className="btn secondary" onClick={loadAll} disabled={loading}>
             Refresh
           </button>
@@ -654,6 +675,76 @@ export default function Home() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Knowledge base</h2>
+        {knowledgeCfg && (
+          <div className="space-y-3">
+            <label>
+              <input
+                type="checkbox"
+                checked={knowledgeCfg.enable_knowledge_base}
+                onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, enable_knowledge_base: e.target.checked })}
+              />{" "}
+              Enable FAQ / AI search knowledge base
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={knowledgeCfg.provider}
+                onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, provider: e.target.value as KnowledgeBaseConfig["provider"] })}
+              >
+                <option value="azure_ai_search">Azure AI Search</option>
+                <option value="none">None</option>
+              </select>
+              <select
+                value={knowledgeCfg.retrieval_mode}
+                onChange={(e) =>
+                  setKnowledgeCfg({ ...knowledgeCfg, retrieval_mode: e.target.value as KnowledgeBaseConfig["retrieval_mode"] })
+                }
+              >
+                <option value="single-pass">Single-pass retrieval</option>
+                <option value="agentic">Agentic multi-step retrieval</option>
+              </select>
+            </div>
+            <input
+              className="w-full"
+              placeholder="Search endpoint"
+              value={knowledgeCfg.endpoint || ""}
+              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, endpoint: e.target.value })}
+            />
+            <input
+              className="w-full"
+              placeholder="Index name"
+              value={knowledgeCfg.index_name || ""}
+              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, index_name: e.target.value })}
+            />
+            <input
+              className="w-full"
+              type="password"
+              placeholder="API key"
+              value={knowledgeCfg.api_key || ""}
+              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, api_key: e.target.value })}
+            />
+            <div className="grid grid-cols-2 gap-2 items-center">
+              <label>Max agentic passes (for iterative retrieval)</label>
+              <input
+                type="number"
+                min={1}
+                value={knowledgeCfg.max_agentic_passes}
+                onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, max_agentic_passes: Number(e.target.value) || 1 })}
+              />
+            </div>
+            <label>
+              <input
+                type="checkbox"
+                checked={knowledgeCfg.use_semantic_ranker}
+                onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, use_semantic_ranker: e.target.checked })}
+              />{" "}
+              Use semantic ranker
+            </label>
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
         <div className="card">
           <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Persistence</h2>
@@ -705,6 +796,43 @@ export default function Home() {
                   value={persistence.partition_key || ""}
                   onChange={(e) => setPersistence({ ...persistence, partition_key: e.target.value })}
                 />
+              </div>
+              <div className="border rounded p-2 space-y-2">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={persistence.enable_semantic_cache}
+                    onChange={(e) => setPersistence({ ...persistence, enable_semantic_cache: e.target.checked })}
+                  />{" "}
+                  Enable semantic caching (Azure Cache for Redis)
+                </label>
+                {persistence.enable_semantic_cache && (
+                  <div className="space-y-2">
+                    <input
+                      className="w-full"
+                      placeholder="Redis connection string"
+                      value={persistence.redis_connection_string || ""}
+                      onChange={(e) => setPersistence({ ...persistence, redis_connection_string: e.target.value })}
+                    />
+                    <input
+                      className="w-full"
+                      placeholder="Redis password"
+                      type="password"
+                      value={persistence.redis_password || ""}
+                      onChange={(e) => setPersistence({ ...persistence, redis_password: e.target.value })}
+                    />
+                    <div className="grid grid-cols-2 gap-2 items-center">
+                      <label>Semantic TTL (seconds)</label>
+                      <input
+                        type="number"
+                        value={persistence.semantic_ttl_seconds}
+                        onChange={(e) =>
+                          setPersistence({ ...persistence, semantic_ttl_seconds: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

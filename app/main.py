@@ -12,7 +12,14 @@ from .persistence import ThreadStore
 
 
 state_lock = threading.Lock()
-project_config, forms_config, tools_config, persistence_config, logging_config = load_configs()
+(
+    project_config,
+    forms_config,
+    tools_config,
+    persistence_config,
+    logging_config,
+    knowledge_config,
+) = load_configs()
 graph_app, checkpointer = build_graph(forms_config, tools_config)
 thread_store = ThreadStore(persistence_config)
 
@@ -35,7 +42,7 @@ app.add_middleware(
 
 
 def reload_runtime() -> None:
-    global project_config, forms_config, tools_config, persistence_config, logging_config, graph_app, checkpointer, thread_store
+    global project_config, forms_config, tools_config, persistence_config, logging_config, knowledge_config, graph_app, checkpointer, thread_store
     with state_lock:
         (
             project_config,
@@ -43,6 +50,7 @@ def reload_runtime() -> None:
             tools_config,
             persistence_config,
             logging_config,
+            knowledge_config,
         ) = load_configs()
         graph_app, checkpointer = build_graph(forms_config, tools_config)
         thread_store = ThreadStore(persistence_config)

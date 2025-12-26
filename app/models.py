@@ -18,6 +18,17 @@ class ProjectConfig(BaseModel):
     azure_app_service: Optional[AzureAppServiceSettings] = None
 
 
+class KnowledgeBaseConfig(BaseModel):
+    enable_knowledge_base: bool = False
+    provider: Literal["azure_ai_search", "none"] = "azure_ai_search"
+    endpoint: Optional[HttpUrl] = None
+    api_key: Optional[str] = None
+    index_name: Optional[str] = None
+    retrieval_mode: Literal["single-pass", "agentic"] = "single-pass"
+    max_agentic_passes: int = 3
+    use_semantic_ranker: bool = True
+
+
 class FieldDefinition(BaseModel):
     name: str
     label: str
@@ -88,6 +99,10 @@ class PersistenceConfig(BaseModel):
     database: Optional[str] = None
     container: Optional[str] = None
     partition_key: Optional[str] = None
+    enable_semantic_cache: bool = False
+    redis_connection_string: Optional[str] = None
+    redis_password: Optional[str] = None
+    semantic_ttl_seconds: int = 3600
 
 
 class LoggingConfig(BaseModel):

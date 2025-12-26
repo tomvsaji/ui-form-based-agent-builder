@@ -5,5 +5,9 @@
   "cosmos_key": "YOUR-COSMOS-KEY",
   "database": "agentdb",
   "container": "threads",
-  "partition_key": "/thread_id"
+  "partition_key": "/thread_id",
+  "enable_semantic_cache": false,
+  "redis_connection_string": "",
+  "redis_password": "",
+  "semantic_ttl_seconds": 3600
 }
