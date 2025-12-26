@@ -4,6 +4,7 @@ from typing import Dict, Tuple
 
 from .models import (
     FormsConfig,
+    KnowledgeBaseConfig,
     LoggingConfig,
     PersistenceConfig,
     ProjectConfig,
@@ -18,6 +19,7 @@ CONFIG_FILES: Dict[str, Path] = {
     "tools": CONFIG_DIR / "tools.json",
     "persistence": CONFIG_DIR / "persistence.json",
     "logging": CONFIG_DIR / "logging.json",
+    "knowledge": CONFIG_DIR / "knowledge.json",
 }
 
 
@@ -26,13 +28,21 @@ def _load_json(path: Path) -> dict:
         return json.load(f)
 
 
-def load_configs() -> Tuple[ProjectConfig, FormsConfig, ToolsConfig, PersistenceConfig, LoggingConfig]:
+def load_configs() -> Tuple[
+    ProjectConfig,
+    FormsConfig,
+    ToolsConfig,
+    PersistenceConfig,
+    LoggingConfig,
+    KnowledgeBaseConfig,
+]:
     project = ProjectConfig.model_validate(_load_json(CONFIG_FILES["project"]))
     forms = FormsConfig.model_validate(_load_json(CONFIG_FILES["forms"]))
     tools = ToolsConfig.model_validate(_load_json(CONFIG_FILES["tools"]))
     persistence = PersistenceConfig.model_validate(_load_json(CONFIG_FILES["persistence"]))
     logging_cfg = LoggingConfig.model_validate(_load_json(CONFIG_FILES["logging"]))
-    return project, forms, tools, persistence, logging_cfg
+    knowledge_cfg = KnowledgeBaseConfig.model_validate(_load_json(CONFIG_FILES["knowledge"]))
+    return project, forms, tools, persistence, logging_cfg, knowledge_cfg
 
 
 def write_config(name: str, data: dict) -> None:
