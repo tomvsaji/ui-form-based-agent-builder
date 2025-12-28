@@ -48,6 +48,12 @@ Builder:
 - `GET /api/versions/{version}`
 - `GET /api/threads`
 - `GET /api/threads/{thread_id}/messages`
+- `GET /api/traces`
+- `GET /api/knowledge-bases`
+- `POST /api/knowledge-bases`
+- `POST /api/knowledge-bases/{kb_id}/documents`
+- `POST /api/knowledge-bases/{kb_id}/upload`
+- `POST /api/knowledge-bases/{kb_id}/search`
 
 Runtime:
 - `GET /runtime/health`
@@ -56,4 +62,8 @@ Runtime:
 
 ## Notes
 - Postgres is required. Redis is available for caching and session state in future iterations.
+- Knowledge base indexing uses OpenAI embeddings. Set `OPENAI_API_KEY` (and optionally `EMBEDDING_MODEL`) in `.env`.
+- Knowledge base upload supports `.txt`, `.md`, and `.pdf` files.
+- LLM routing/extraction uses `OPENAI_API_KEY` and can be controlled via `LLM_ROUTING_ENABLED` and `LLM_EXTRACTION_ENABLED`.
+- Tool execution is optional and gated by `TOOLS_ENABLED`.
 - All services are Docker-first and cloud-agnostic.

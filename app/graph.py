@@ -1,8 +1,10 @@
+import os
 from typing import Dict, Optional, Tuple
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
+from .llm import extract_fields, select_intent
 from .models import AgentState, FieldDefinition, FormsConfig, ToolsConfig
 
 
@@ -12,6 +14,10 @@ def _ensure_defaults(state: AgentState) -> AgentState:
     state.setdefault("current_step_index", 0)
     state.setdefault("completed", False)
     state.setdefault("awaiting_field", False)
+    state.setdefault("llm_extraction_attempted", False)
+    state.setdefault("llm_usage", {})
+    state.setdefault("trace_events", [])
+    state.setdefault("tool_executed", False)
     return state
 
 
@@ -96,6 +102,17 @@ def build_graph(forms_config: FormsConfig, tools_config: ToolsConfig):
 
         last_message = state.get("last_user_message") or ""
         chosen_intent = None
+        if os.getenv("LLM_ROUTING_ENABLED", "true").lower() == "true" and forms_config.intents:
+            try:
+                intent_id, meta = select_intent(
+                    last_message,
+                    [{"id": i.id, "name": i.name, "description": i.description} for i in forms_config.intents],
+                )
+                chosen_intent = next((i for i in forms_config.intents if i.id == intent_id), None)
+                state["trace_events"].append({"stage": "intent_router", "llm": meta})
+                state["llm_usage"] = meta.get("usage", {})
+            except Exception:
+                chosen_intent = None
         for intent in forms_config.intents:
             if intent.name.lower() in last_message.lower() or any(
                 token in last_message.lower() for token in intent.description.lower().split()
@@ -171,6 +188,32 @@ def build_graph(forms_config: FormsConfig, tools_config: ToolsConfig):
 
         # Attempt very light extraction for one-shot inputs
         user_msg = state.get("last_user_message", "")
+        if not state.get("llm_extraction_attempted") and os.getenv("LLM_EXTRACTION_ENABLED", "true").lower() == "true":
+            try:
+                extracted, meta = extract_fields(
+                    user_msg,
+                    [
+                        {
+                            "name": f.name,
+                            "label": f.label,
+                            "type": f.type,
+                            "required": f.required,
+                        }
+                        for f in form.fields
+                    ],
+                )
+                state["trace_events"].append({"stage": "field_extraction", "llm": meta})
+                state["llm_usage"] = meta.get("usage", {})
+                for field in form.fields:
+                    raw_value = extracted.get(field.name)
+                    if raw_value is None:
+                        continue
+                    ok, _, parsed_value = _validate_field(field, str(raw_value))
+                    if ok:
+                        state["form_values"][field.name] = parsed_value
+                state["llm_extraction_attempted"] = True
+            except Exception:
+                state["llm_extraction_attempted"] = True
         for field in form.fields:
             existing = state["form_values"].get(field.name)
             if existing is not None:
