@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 
 from .cache import build_cache_key, cache_get, cache_set, get_redis
 from .graph import build_graph
-from .models import ChatResponse, FormsConfig, ToolsConfig
+from .models import ChatResponse, FormsConfig, ToolDefinition, ToolsConfig
 from .storage import (
     get_agent_id,
     get_latest_version_payload,
@@ -16,8 +17,10 @@ from .storage import (
     get_thread_state,
     get_version_config,
     log_chat,
+    log_trace,
     upsert_thread_state,
 )
+from .tools_runtime import execute_tool
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,11 +100,55 @@ def chat(req: RuntimeMessageRequest):
     result = graph_app.invoke(state_input, config={"configurable": {"thread_id": req.thread_id}})
     reply = result.get("reply", "I was not able to generate a response.")
 
+    if (
+        os.getenv("TOOLS_ENABLED", "false").lower() == "true"
+        and result.get("completed")
+        and not result.get("tool_executed")
+    ):
+        form = forms_config.form_by_id(result.get("current_form_id", ""))
+        tool_to_call = None
+        if form and form.submission and form.submission.type == "tool" and form.submission.tool_name:
+            tool_to_call = next((t for t in tools_config.tools if t.name == form.submission.tool_name), None)
+        elif form and form.submission and form.submission.type == "api" and form.submission.url:
+            tool_to_call = ToolDefinition(
+                name="form_submission",
+                description="Form submission",
+                http_method=form.submission.http_method or "POST",
+                url=form.submission.url,
+                headers=form.submission.headers or {},
+                role="submit-form",
+            )
+        else:
+            tool_to_call = next((t for t in tools_config.tools if t.role == "submit-form"), None)
+
+        if tool_to_call:
+            tool_payload = result.get("form_values", {})
+            tool_result = execute_tool(tool_to_call, tool_payload, tenant_id, agent_id, version)
+            result["tool_executed"] = True
+            result["tool_name"] = tool_to_call.name
+            result["tool_response"] = tool_result
+            result.setdefault("trace_events", []).append({"stage": "tool_call", "tool": tool_to_call.name, "result": tool_result})
+
     upsert_thread_state(tenant_id, agent_id, version, req.thread_id, result)
     if redis_client:
         ttl = int(os.getenv("CACHE_TTL_SECONDS", "900"))
         cache_set(redis_client, cache_key, result, ttl)
     log_chat(tenant_id, agent_id, version, req.thread_id, "user", req.message)
     log_chat(tenant_id, agent_id, version, req.thread_id, "assistant", reply, state=result)
+    trace_id = str(uuid.uuid4())
+    log_trace(
+        tenant_id,
+        agent_id,
+        version,
+        req.thread_id,
+        trace_id,
+        {
+            "input": req.message,
+            "output": reply,
+            "tokens": result.get("llm_usage", {}),
+            "tools": result.get("tool_response"),
+            "events": result.get("trace_events", []),
+        },
+    )
     logger.info("Processed message for thread %s", req.thread_id)
     return ChatResponse(reply=reply, state=result)

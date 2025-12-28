@@ -62,6 +62,8 @@ type Tool = {
   body_schema?: Record<string, unknown>;
   auth: "none" | "api_key" | "bearer" | "managed_identity";
   role: "pre-submit-validator" | "data-enricher" | "submit-form";
+  cache_enabled?: boolean;
+  cache_ttl_seconds?: number | null;
 };
 
 type ProjectConfig = {
@@ -79,7 +81,7 @@ type ProjectConfig = {
 
 type KnowledgeBaseConfig = {
   enable_knowledge_base: boolean;
-  provider: "azure_ai_search" | "none";
+  provider: "azure_ai_search" | "pgvector" | "none";
   endpoint?: string | null;
   api_key?: string | null;
   index_name?: string | null;
@@ -90,6 +92,10 @@ type KnowledgeBaseConfig = {
 
 type FormsConfig = { intents: Intent[]; forms: Form[] };
 type ToolsConfig = { tools: Tool[] };
+type ThreadSummary = { thread_id: string; last_activity?: string | null };
+type ThreadMessage = { role: string; content: string; created_at?: string | null };
+type TraceLog = { trace_id: string; thread_id: string; version: number; data: Record<string, unknown>; created_at?: string | null };
+type KnowledgeBase = { id: number; name: string; description: string; provider: string; created_at?: string | null };
 type PersistenceConfig = {
   storage_backend?: "none" | "postgres" | "mongo" | "cosmos";
   postgres_dsn?: string | null;
@@ -120,6 +126,19 @@ export default function Home() {
   const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<"configure" | "test" | "threads" | "traces" | "knowledge">("configure");
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string>("");
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [traces, setTraces] = useState<TraceLog[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [kbName, setKbName] = useState<string>("");
+  const [kbDescription, setKbDescription] = useState<string>("");
+  const [kbProvider, setKbProvider] = useState<"pgvector" | "azure_ai_search">("pgvector");
+  const [kbDocContent, setKbDocContent] = useState<string>("");
+  const [kbQuery, setKbQuery] = useState<string>("");
+  const [kbResults, setKbResults] = useState<{ content: string; distance: number | null }[]>([]);
+  const [kbFile, setKbFile] = useState<File | null>(null);
 
   const selectedForm = useMemo(
     () => formsCfg?.forms.find((f) => f.id === selectedFormId) || null,
@@ -152,6 +171,130 @@ export default function Home() {
   useEffect(() => {
     void loadAll();
   }, []);
+
+  const loadThreads = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/threads`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setThreads(data.threads || []);
+      setMessage("Loaded threads.");
+    } catch (err) {
+      setMessage(`Failed to load threads: ${String(err)}`);
+    }
+  };
+
+  const loadThreadMessages = async (threadId: string) => {
+    if (!threadId) return;
+    try {
+      const res = await fetch(`${API_BASE}/threads/${threadId}/messages`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setThreadMessages(data.messages || []);
+      setSelectedThreadId(threadId);
+    } catch (err) {
+      setMessage(`Failed to load thread: ${String(err)}`);
+    }
+  };
+
+  const loadTraces = async (threadId?: string) => {
+    try {
+      const url = threadId ? `${API_BASE}/traces?thread_id=${encodeURIComponent(threadId)}` : `${API_BASE}/traces`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setTraces(data.traces || []);
+    } catch (err) {
+      setMessage(`Failed to load traces: ${String(err)}`);
+    }
+  };
+
+  const loadKnowledgeBases = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setKnowledgeBases(data.items || []);
+    } catch (err) {
+      setMessage(`Failed to load knowledge bases: ${String(err)}`);
+    }
+  };
+
+  const createKnowledgeBase = async () => {
+    if (!kbName.trim()) {
+      setMessage("Knowledge base name is required.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: kbName, description: kbDescription, provider: kbProvider }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setKbName("");
+      setKbDescription("");
+      await loadKnowledgeBases();
+      setMessage("Knowledge base created.");
+    } catch (err) {
+      setMessage(`Create KB failed: ${String(err)}`);
+    }
+  };
+
+  const addKnowledgeDocument = async (kbId: number) => {
+    if (!kbDocContent.trim()) {
+      setMessage("Document content is required.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: kbDocContent }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setKbDocContent("");
+      setMessage("Document indexed.");
+    } catch (err) {
+      setMessage(`Indexing failed: ${String(err)}`);
+    }
+  };
+
+  const uploadKnowledgeFile = async (kbId: number) => {
+    if (!kbFile) {
+      setMessage("Choose a file to upload.");
+      return;
+    }
+    const formData = new FormData();
+    formData.append("file", kbFile);
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setKbFile(null);
+      setMessage("File indexed.");
+    } catch (err) {
+      setMessage(`Upload failed: ${String(err)}`);
+    }
+  };
+
+  const searchKnowledgeBase = async (kbId: number) => {
+    if (!kbQuery.trim()) return;
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: kbQuery, limit: 5 }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setKbResults(data.results || []);
+    } catch (err) {
+      setMessage(`Search failed: ${String(err)}`);
+    }
+  };
 
   const saveConfig = async (name: string, data: unknown) => {
     const res = await fetch(`${API_BASE}/config/${name}`, {
@@ -318,6 +461,8 @@ export default function Home() {
       headers: {},
       query_schema: {},
       body_schema: {},
+      cache_enabled: false,
+      cache_ttl_seconds: null,
     };
     setToolsCfg({ ...toolsCfg, tools: [...toolsCfg.tools, newTool] });
   };
@@ -337,9 +482,6 @@ export default function Home() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <a className="btn secondary" href="/chat">
-            Chat tester
-          </a>
           <button className="btn secondary" onClick={loadAll} disabled={loading}>
             Refresh
           </button>
@@ -354,7 +496,31 @@ export default function Home() {
 
       {message && <div className="card" style={{ marginBottom: 12 }}>{message}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16, alignItems: "start" }}>
+        <aside className="card" style={{ position: "sticky", top: 24 }}>
+          <div className="space-y-2">
+            <button className="btn secondary" onClick={() => setActiveTab("configure")}>
+              Configure flow
+            </button>
+            <button className="btn secondary" onClick={() => setActiveTab("test")}>
+              Test bot
+            </button>
+            <button className="btn secondary" onClick={() => { setActiveTab("threads"); void loadThreads(); }}>
+              View threads
+            </button>
+            <button className="btn secondary" onClick={() => { setActiveTab("traces"); void loadTraces(); }}>
+              Inspect traces
+            </button>
+            <button className="btn secondary" onClick={() => { setActiveTab("knowledge"); void loadKnowledgeBases(); }}>
+              Knowledge base
+            </button>
+          </div>
+        </aside>
+
+        <div>
+          {activeTab === "configure" && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, marginBottom: 16 }}>
         <div className="card" style={{ minHeight: 240 }}>
           <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Project</h2>
           {project && (
@@ -693,6 +859,22 @@ export default function Home() {
                   <option value="data-enricher">Data enricher</option>
                   <option value="submit-form">Submit form</option>
                 </select>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={tool.cache_enabled || false}
+                    onChange={(e) => updateTool(tool.name, { cache_enabled: e.target.checked })}
+                  />
+                  Cache responses
+                </label>
+                <input
+                  type="number"
+                  placeholder="Cache TTL (seconds)"
+                  value={tool.cache_ttl_seconds ?? ""}
+                  onChange={(e) =>
+                    updateTool(tool.name, { cache_ttl_seconds: Number(e.target.value) || null })
+                  }
+                />
               </div>
             </div>
           ))}
@@ -717,6 +899,7 @@ export default function Home() {
                 onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, provider: e.target.value as KnowledgeBaseConfig["provider"] })}
               >
                 <option value="azure_ai_search">Azure AI Search</option>
+                <option value="pgvector">Postgres pgvector</option>
                 <option value="none">None</option>
               </select>
               <select
@@ -884,6 +1067,152 @@ export default function Home() {
                   <option key={lvl}>{lvl}</option>
                 ))}
               </select>
+            </div>
+          )}
+        </div>
+      </div>
+            </>
+          )}
+
+          {activeTab === "test" && (
+            <div className="card">
+              <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Test the bot</h2>
+              <p>Open the chat tester to run messages against the published runtime.</p>
+              <a className="btn secondary" href="/chat">
+                Open chat tester
+              </a>
+            </div>
+          )}
+
+          {activeTab === "threads" && (
+            <div className="card space-y-2">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Chat threads</h2>
+                <button className="btn secondary" onClick={loadThreads}>
+                  Refresh threads
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-2">
+                  {threads.length === 0 && <p>No threads yet.</p>}
+                  {threads.map((t) => (
+                    <button
+                      key={t.thread_id}
+                      className="btn secondary"
+                      onClick={() => loadThreadMessages(t.thread_id)}
+                    >
+                      {t.thread_id}
+                    </button>
+                  ))}
+                </div>
+                <div className="space-y-2">
+                  {selectedThreadId && (
+                    <div className="text-sm text-slate-600">Thread: {selectedThreadId}</div>
+                  )}
+                  {threadMessages.map((m, idx) => (
+                    <div key={idx} className="border rounded p-3">
+                      <div style={{ fontWeight: 600 }}>{m.role}</div>
+                      <div>{m.content}</div>
+                      {m.created_at && <div className="text-sm text-slate-500">{m.created_at}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "traces" && (
+            <div className="card space-y-2">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Trace logs</h2>
+                <button className="btn secondary" onClick={() => loadTraces(selectedThreadId || undefined)}>
+                  Refresh traces
+                </button>
+              </div>
+              {traces.length === 0 && <p>No trace logs yet.</p>}
+              {traces.map((trace) => (
+                <div key={trace.trace_id} className="border rounded p-3">
+                  <div style={{ fontWeight: 600 }}>Trace {trace.trace_id}</div>
+                  <div className="text-sm text-slate-600">Thread: {trace.thread_id} · Version: {trace.version}</div>
+                  <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(trace.data, null, 2)}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === "knowledge" && (
+            <div className="space-y-3">
+              <div className="card">
+                <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Knowledge bases</h2>
+                <div className="space-y-2">
+                <input
+                  className="w-full"
+                  placeholder="Knowledge base name"
+                  value={kbName}
+                  onChange={(e) => setKbName(e.target.value)}
+                />
+                <select value={kbProvider} onChange={(e) => setKbProvider(e.target.value as "pgvector" | "azure_ai_search")}>
+                  <option value="pgvector">Postgres pgvector</option>
+                  <option value="azure_ai_search">Azure AI Search</option>
+                </select>
+                <textarea
+                  className="w-full"
+                  placeholder="Description"
+                  value={kbDescription}
+                  onChange={(e) => setKbDescription(e.target.value)}
+                  />
+                  <button className="btn secondary" onClick={createKnowledgeBase}>
+                    Create knowledge base
+                  </button>
+                </div>
+                <div className="space-y-2" style={{ marginTop: 12 }}>
+                  {knowledgeBases.length === 0 && <p>No knowledge bases yet.</p>}
+                  {knowledgeBases.map((kb) => (
+                    <div key={kb.id} className="border rounded p-3">
+                      <div style={{ fontWeight: 600 }}>{kb.name}</div>
+                      <div className="text-sm text-slate-600">{kb.description}</div>
+                      <div className="space-y-2" style={{ marginTop: 8 }}>
+                        <input
+                          type="file"
+                          accept=".txt,.md,.pdf"
+                          onChange={(e) => setKbFile(e.target.files?.[0] || null)}
+                        />
+                        <button className="btn secondary" onClick={() => uploadKnowledgeFile(kb.id)}>
+                          Upload file
+                        </button>
+                        <textarea
+                          className="w-full"
+                          placeholder="Paste content to index"
+                          value={kbDocContent}
+                          onChange={(e) => setKbDocContent(e.target.value)}
+                        />
+                        <button className="btn secondary" onClick={() => addKnowledgeDocument(kb.id)}>
+                          Index content
+                        </button>
+                        <input
+                          className="w-full"
+                          placeholder="Search query"
+                          value={kbQuery}
+                          onChange={(e) => setKbQuery(e.target.value)}
+                        />
+                        <button className="btn secondary" onClick={() => searchKnowledgeBase(kb.id)}>
+                          Search
+                        </button>
+                        {kbResults.length > 0 && (
+                          <div className="space-y-2">
+                            {kbResults.map((r, idx) => (
+                              <div key={idx} className="border rounded p-2">
+                                <div className="text-sm text-slate-600">Distance: {r.distance ?? "n/a"}</div>
+                                <div>{r.content}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>

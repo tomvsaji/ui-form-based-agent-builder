@@ -20,7 +20,7 @@ class ProjectConfig(BaseModel):
 
 class KnowledgeBaseConfig(BaseModel):
     enable_knowledge_base: bool = False
-    provider: Literal["azure_ai_search", "none"] = "azure_ai_search"
+    provider: Literal["azure_ai_search", "pgvector", "none"] = "pgvector"
     endpoint: Optional[HttpUrl] = None
     api_key: Optional[str] = None
     index_name: Optional[str] = None
@@ -160,6 +160,8 @@ class ToolDefinition(BaseModel):
     body_schema: Dict[str, Any] = Field(default_factory=dict)
     auth: Literal["none", "api_key", "bearer", "managed_identity"] = "none"
     role: Literal["pre-submit-validator", "data-enricher", "submit-form"]
+    cache_enabled: bool = False
+    cache_ttl_seconds: Optional[int] = None
 
 
 class ToolsConfig(BaseModel):
@@ -214,3 +216,9 @@ class AgentState(TypedDict, total=False):
     form_values: Dict[str, Any]
     completed: bool
     awaiting_field: bool
+    llm_extraction_attempted: bool
+    llm_usage: Dict[str, Any]
+    trace_events: List[Dict[str, Any]]
+    tool_executed: bool
+    tool_name: Optional[str]
+    tool_response: Optional[Dict[str, Any]]

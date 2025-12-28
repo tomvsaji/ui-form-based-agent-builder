@@ -26,6 +26,11 @@ export default function ChatTester() {
   const loadForms = async () => {
     try {
       const res = await fetch(`${API_BASE}/forms`);
+      if (res.status === 404) {
+        setStatus("No published version found. Publish a version in the builder first.");
+        setForms([]);
+        return;
+      }
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setForms(data.forms || []);

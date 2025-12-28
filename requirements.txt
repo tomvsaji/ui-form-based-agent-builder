@@ -10,3 +10,5 @@ alembic>=1.13.1
 redis>=5.0.4
 openai>=1.30.0
 pgvector>=0.2.5
+pypdf>=4.2.0
+python-multipart>=0.0.9

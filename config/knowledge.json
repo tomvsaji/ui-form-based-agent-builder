@@ -1,9 +1,9 @@
 {
   "enable_knowledge_base": false,
-  "provider": "azure_ai_search",
-  "endpoint": "https://your-search-instance.search.windows.net",
+  "provider": "pgvector",
+  "endpoint": "",
   "api_key": "",
-  "index_name": "faqs",
+  "index_name": "",
   "retrieval_mode": "single-pass",
   "max_agentic_passes": 3,
   "use_semantic_ranker": true

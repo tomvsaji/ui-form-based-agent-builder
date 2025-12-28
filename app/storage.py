@@ -5,7 +5,16 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import desc, select
 
 from .db import session_scope
-from .db_models import AgentDraft, AgentVersion, AuditLog, ChatLog, ThreadState
+from .db_models import (
+    AgentDraft,
+    AgentVersion,
+    AuditLog,
+    ChatLog,
+    KnowledgeBase,
+    KnowledgeDocument,
+    ThreadState,
+    TraceLog,
+)
 
 
 DEFAULT_TENANT = "local"
@@ -220,4 +229,110 @@ def get_thread_messages(tenant_id: str, agent_id: str, thread_id: str) -> List[D
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }
             for row in session.execute(stmt)
+        ]
+
+
+def create_knowledge_base(tenant_id: str, name: str, description: str, provider: str) -> int:
+    with session_scope() as session:
+        kb = KnowledgeBase(tenant_id=tenant_id, name=name, description=description, provider=provider)
+        session.add(kb)
+        session.flush()
+        return int(kb.id)
+
+
+def list_knowledge_bases(tenant_id: str) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id).order_by(KnowledgeBase.created_at.desc())
+        return [
+            {
+                "id": kb.id,
+                "name": kb.name,
+                "description": kb.description,
+                "provider": kb.provider,
+                "created_at": kb.created_at.isoformat() if kb.created_at else None,
+            }
+            for kb in session.execute(stmt).scalars().all()
+        ]
+
+
+def add_kb_document(
+    tenant_id: str,
+    kb_id: int,
+    content: str,
+    embedding: Optional[List[float]],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> int:
+    with session_scope() as session:
+        doc = KnowledgeDocument(
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            content=content,
+            embedding=embedding,
+            doc_metadata=metadata,
+        )
+        session.add(doc)
+        session.flush()
+        return int(doc.id)
+
+
+def search_kb_documents(tenant_id: str, kb_id: int, embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = (
+            select(
+                KnowledgeDocument.id,
+                KnowledgeDocument.content,
+                KnowledgeDocument.doc_metadata,
+                KnowledgeDocument.embedding.cosine_distance(embedding).label("distance"),
+            )
+            .where(KnowledgeDocument.tenant_id == tenant_id, KnowledgeDocument.kb_id == kb_id)
+            .order_by("distance")
+            .limit(limit)
+        )
+        return [
+            {
+                "id": row.id,
+                "content": row.content,
+                "metadata": row.doc_metadata,
+                "distance": float(row.distance) if row.distance is not None else None,
+            }
+            for row in session.execute(stmt)
+        ]
+
+
+def log_trace(
+    tenant_id: str,
+    agent_id: str,
+    version: int,
+    thread_id: str,
+    trace_id: str,
+    data: Dict[str, Any],
+) -> None:
+    with session_scope() as session:
+        session.add(
+            TraceLog(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                version=version,
+                thread_id=thread_id,
+                trace_id=trace_id,
+                data=data,
+            )
+        )
+
+
+def list_traces(tenant_id: str, agent_id: str, thread_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(TraceLog).where(TraceLog.tenant_id == tenant_id, TraceLog.agent_id == agent_id)
+        if thread_id:
+            stmt = stmt.where(TraceLog.thread_id == thread_id)
+        stmt = stmt.order_by(TraceLog.created_at.desc()).limit(100)
+        return [
+            {
+                "trace_id": trace.trace_id,
+                "thread_id": trace.thread_id,
+                "version": trace.version,
+                "data": trace.data,
+                "created_at": trace.created_at.isoformat() if trace.created_at else None,
+            }
+            for trace in session.execute(stmt).scalars().all()
         ]

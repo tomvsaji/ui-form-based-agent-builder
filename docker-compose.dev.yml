@@ -6,12 +6,26 @@ services:
     volumes:
       - ./app:/app/app
       - ./config:/app/config
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_ROUTING_ENABLED=${LLM_ROUTING_ENABLED:-true}
+      - LLM_EXTRACTION_ENABLED=${LLM_EXTRACTION_ENABLED:-true}
+      - TOOLS_ENABLED=${TOOLS_ENABLED:-false}
 
   runtime-api:
     command: ["uvicorn", "app.runtime_main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     volumes:
       - ./app:/app/app
       - ./config:/app/config
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - LLM_ROUTING_ENABLED=${LLM_ROUTING_ENABLED:-true}
+      - LLM_EXTRACTION_ENABLED=${LLM_EXTRACTION_ENABLED:-true}
+      - TOOLS_ENABLED=${TOOLS_ENABLED:-false}
 
   builder-frontend:
     build:
