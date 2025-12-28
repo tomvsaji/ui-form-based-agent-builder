@@ -19,6 +19,13 @@ def _validate_field(field: FieldDefinition, raw_value: Optional[str]) -> Tuple[b
     if raw_value is None:
         return (not field.required, "No value provided.", None)
 
+    constraints = field.constraints
+    min_length = field.min_length if field.min_length is not None else (constraints.min_length if constraints else None)
+    max_length = field.max_length if field.max_length is not None else (constraints.max_length if constraints else None)
+    minimum = field.minimum if field.minimum is not None else (constraints.minimum if constraints else None)
+    maximum = field.maximum if field.maximum is not None else (constraints.maximum if constraints else None)
+    pattern = field.pattern or (constraints.regex if constraints else None)
+
     if field.type == "boolean":
         normalized = raw_value.strip().lower()
         if normalized in {"yes", "true", "y", "1"}:
@@ -32,29 +39,29 @@ def _validate_field(field: FieldDefinition, raw_value: Optional[str]) -> Tuple[b
             num_val = float(raw_value)
         except ValueError:
             return False, "Please provide a numeric value.", None
-        if field.minimum is not None and num_val < field.minimum:
-            return False, f"Value must be at least {field.minimum}.", None
-        if field.maximum is not None and num_val > field.maximum:
-            return False, f"Value must be at most {field.maximum}.", None
+        if minimum is not None and num_val < minimum:
+            return False, f"Value must be at least {minimum}.", None
+        if maximum is not None and num_val > maximum:
+            return False, f"Value must be at most {maximum}.", None
         return True, "", num_val
 
-    if field.type == "dropdown":
+    if field.type in {"dropdown", "enum"}:
         if field.dropdown_options and raw_value.lower() in {o.lower() for o in field.dropdown_options}:
             # Preserve canonical casing from the options list
             canonical = next(o for o in field.dropdown_options if o.lower() == raw_value.lower())
             return True, "", canonical
         return False, f"Please choose one of: {', '.join(field.dropdown_options or [])}", None
 
-    # Text/date fall back to string validation
+    # Text/date/file fall back to string validation
     text_val = str(raw_value)
-    if field.min_length and len(text_val) < field.min_length:
-        return False, f"Provide at least {field.min_length} characters.", None
-    if field.max_length and len(text_val) > field.max_length:
-        return False, f"Limit to {field.max_length} characters.", None
-    if field.pattern:
+    if min_length and len(text_val) < min_length:
+        return False, f"Provide at least {min_length} characters.", None
+    if max_length and len(text_val) > max_length:
+        return False, f"Limit to {max_length} characters.", None
+    if pattern:
         import re
 
-        if not re.match(field.pattern, text_val):
+        if not re.match(pattern, text_val):
             return False, "Value does not match required pattern.", None
     return True, "", text_val
 
@@ -175,7 +182,7 @@ def build_graph(forms_config: FormsConfig, tools_config: ToolsConfig):
                 match = re.search(r"([-+]?\d*\.\d+|[-+]?\d+)", user_msg)
                 parsed_value = float(match.group(1)) if match else None
                 ok = parsed_value is not None
-            if field.type == "dropdown" and field.dropdown_options:
+            if field.type in {"dropdown", "enum"} and field.dropdown_options:
                 matched_option = next((opt for opt in field.dropdown_options if opt.lower() in user_msg.lower()), None)
                 parsed_value = matched_option
                 ok = matched_option is not None

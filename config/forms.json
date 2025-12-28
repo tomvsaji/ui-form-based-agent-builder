@@ -23,8 +23,14 @@
     {
       "id": "loan_form",
       "name": "Loan Request",
+      "title": "Loan Request",
       "description": "Collect borrower details to submit a loan application.",
       "submission_url": "https://api.example.com/loan/submit",
+      "submission": {
+        "type": "api",
+        "url": "https://api.example.com/loan/submit",
+        "http_method": "POST"
+      },
       "mode": "step-by-step",
       "field_order": [
         "full_name",
@@ -41,7 +47,11 @@
           "label": "Full name",
           "type": "text",
           "required": true,
-          "min_length": 3
+          "min_length": 3,
+          "ui": {
+            "placeholder": "Jane Doe",
+            "help_text": "Enter the legal name on the loan application."
+          }
         },
         {
           "name": "email",
@@ -93,7 +103,28 @@
           "type": "boolean",
           "required": true
         }
-      ]
+      ],
+      "validators": [
+        {
+          "id": "loan_amount_income",
+          "name": "Income to amount check",
+          "message": "Requested amount is too high for the provided income.",
+          "match": "all",
+          "conditions": [
+            {
+              "field": "amount",
+              "operator": "gt",
+              "value": 50000
+            },
+            {
+              "field": "income",
+              "operator": "lt",
+              "value": 40000
+            }
+          ]
+        }
+      ],
+      "version": 1
     },
     {
       "id": "support_form",

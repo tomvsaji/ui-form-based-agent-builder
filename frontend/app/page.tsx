@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type Intent = { id: string; name: string; description: string; target_form: string };
 type Field = {
   name: string;
   label: string;
-  type: "text" | "number" | "date" | "boolean" | "dropdown";
+  type: "text" | "number" | "date" | "boolean" | "dropdown" | "enum" | "file";
   required?: boolean;
   dropdown_options?: string[];
   dropdown_tool?: string | null;
@@ -17,15 +17,40 @@ type Field = {
   max_length?: number | null;
   minimum?: number | null;
   maximum?: number | null;
+  constraints?: {
+    min_length?: number | null;
+    max_length?: number | null;
+    minimum?: number | null;
+    maximum?: number | null;
+    regex?: string | null;
+  } | null;
+  ui?: { placeholder?: string | null; help_text?: string | null; options?: string[] | null } | null;
 };
 type Form = {
   id: string;
   name: string;
+  title?: string | null;
   description: string;
   submission_url?: string | null;
+  submission?: {
+    type: "api" | "tool";
+    tool_name?: string | null;
+    url?: string | null;
+    http_method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | null;
+    headers?: Record<string, string>;
+    body_template?: Record<string, unknown>;
+  } | null;
   mode: "step-by-step" | "one-shot";
   field_order: string[];
   fields: Field[];
+  validators?: Array<{
+    id: string;
+    name: string;
+    message: string;
+    match?: "all" | "any";
+    conditions?: Array<{ field: string; operator: string; value?: unknown }>;
+  }>;
+  version?: number;
 };
 type Tool = {
   name: string;
@@ -45,10 +70,10 @@ type ProjectConfig = {
   base_url: string;
   deploy_to_azure: boolean;
   azure_app_service?: {
-    app_name: string;
-    resource_group: string;
-    region: string;
-    auth_mode: string;
+    app_name?: string;
+    resource_group?: string;
+    region?: string;
+    auth_mode?: string;
   } | null;
 };
 
@@ -66,17 +91,22 @@ type KnowledgeBaseConfig = {
 type FormsConfig = { intents: Intent[]; forms: Form[] };
 type ToolsConfig = { tools: Tool[] };
 type PersistenceConfig = {
-  enable_cosmos: boolean;
-  use_managed_identity: boolean;
+  storage_backend?: "none" | "postgres" | "mongo" | "cosmos";
+  postgres_dsn?: string | null;
+  mongo_uri?: string | null;
+  enable_chat_logs?: boolean;
+  enable_config_versions?: boolean;
+  enable_cosmos?: boolean;
+  use_managed_identity?: boolean;
   cosmos_account_uri?: string | null;
   cosmos_key?: string | null;
   database?: string | null;
   container?: string | null;
   partition_key?: string | null;
-  enable_semantic_cache: boolean;
+  enable_semantic_cache?: boolean;
   redis_connection_string?: string | null;
   redis_password?: string | null;
-  semantic_ttl_seconds: number;
+  semantic_ttl_seconds?: number;
 };
 type LoggingConfig = { emit_trace_logs: boolean; mode: "console" | "file" | "appinsights"; level: "DEBUG" | "INFO" | "WARNING" | "ERROR" };
 
@@ -149,18 +179,15 @@ export default function Home() {
     }
   };
 
-  const reloadBackend = async (action: "reload" | "ci-dry-run" = "reload") => {
+  const publishConfig = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API_BASE}/generate-backend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
+      const res = await fetch(`${API_BASE}/publish`, { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
-      setMessage(`Backend ${action === "reload" ? "reloaded" : "CI hook (no-op)"} requested.`);
+      const data = await res.json();
+      setMessage(`Published version ${data.version}.`);
     } catch (err) {
-      setMessage(`Reload failed: ${String(err)}`);
+      setMessage(`Publish failed: ${String(err)}`);
     } finally {
       setLoading(false);
     }
@@ -316,11 +343,8 @@ export default function Home() {
           <button className="btn secondary" onClick={loadAll} disabled={loading}>
             Refresh
           </button>
-          <button className="btn secondary" onClick={() => reloadBackend("ci-dry-run")} disabled={loading}>
-            Trigger CI (noop)
-          </button>
-          <button className="btn" onClick={() => reloadBackend("reload")} disabled={loading}>
-            Generate backend
+          <button className="btn secondary" onClick={publishConfig} disabled={loading}>
+            Publish version
           </button>
           <button className="btn" onClick={saveAll} disabled={loading}>
             Save all

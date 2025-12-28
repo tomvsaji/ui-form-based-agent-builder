@@ -1,0 +1,97 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-agent}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-agent}
+      - POSTGRES_DB=${POSTGRES_DB:-agent_builder}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - agentnet
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - agentnet
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN:-postgresql+psycopg://agent:agent@postgres:5432/agent_builder}
+    depends_on:
+      - postgres
+    command: ["alembic", "upgrade", "head"]
+    networks:
+      - agentnet
+
+  builder-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN:-postgresql+psycopg://agent:agent@postgres:5432/agent_builder}
+      - TENANT_ID=${TENANT_ID:-local}
+      - AGENT_ID=${AGENT_ID:-default}
+    depends_on:
+      - migrate
+    command: ["uvicorn", "app.builder_main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - agentnet
+
+  runtime-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - POSTGRES_DSN=${POSTGRES_DSN:-postgresql+psycopg://agent:agent@postgres:5432/agent_builder}
+      - TENANT_ID=${TENANT_ID:-local}
+      - AGENT_ID=${AGENT_ID:-default}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-900}
+    depends_on:
+      - migrate
+      - redis
+    command: ["uvicorn", "app.runtime_main:app", "--host", "0.0.0.0", "--port", "8001"]
+    networks:
+      - agentnet
+
+  builder-frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+      args:
+        - NEXT_PUBLIC_API_BASE=/api
+        - NEXT_PUBLIC_RUNTIME_BASE=/runtime
+    depends_on:
+      - builder-backend
+    networks:
+      - agentnet
+
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - builder-frontend
+      - builder-backend
+      - runtime-api
+    networks:
+      - agentnet
+
+volumes:
+  db_data:
+  redis_data:
+
+networks:
+  agentnet:
+    driver: bridge
