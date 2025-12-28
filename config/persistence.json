@@ -1,5 +1,10 @@
 {
-  "enable_cosmos": true,
+  "storage_backend": "postgres",
+  "postgres_dsn": "postgresql+psycopg://agent:agent@postgres:5432/agent_builder",
+  "mongo_uri": "",
+  "enable_chat_logs": true,
+  "enable_config_versions": true,
+  "enable_cosmos": false,
   "use_managed_identity": false,
   "cosmos_account_uri": "https://your-account.documents.azure.com:443/",
   "cosmos_key": "YOUR-COSMOS-KEY",
