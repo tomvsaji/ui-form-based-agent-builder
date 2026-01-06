@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class AzureAppServiceSettings(BaseModel):
@@ -24,6 +24,7 @@ class KnowledgeBaseConfig(BaseModel):
     endpoint: Optional[HttpUrl] = None
     api_key: Optional[str] = None
     index_name: Optional[str] = None
+    knowledge_base_id: Optional[int] = None
     retrieval_mode: Literal["single-pass", "agentic"] = "single-pass"
     max_agentic_passes: int = 3
     use_semantic_ranker: bool = True
@@ -59,6 +60,13 @@ class DerivedFieldConfig(BaseModel):
     input_fields: List[str] = Field(default_factory=list)
 
 
+class ToolCallConfig(BaseModel):
+    tool_name: str
+    input_map: Dict[str, str] = Field(default_factory=dict)
+    output_map: Dict[str, str] = Field(default_factory=dict)
+    output_path: Optional[str] = None
+
+
 class FieldDefinition(BaseModel):
     id: Optional[str] = None
     name: str
@@ -78,6 +86,8 @@ class FieldDefinition(BaseModel):
     visibility: Optional[VisibilityRule] = None
     enablement: Optional[VisibilityRule] = None
     derived: Optional[DerivedFieldConfig] = None
+    dropdown_tool_config: Optional[ToolCallConfig] = None
+    tool_hook: Optional[ToolCallConfig] = None
 
 
 class ValidatorDefinition(BaseModel):
@@ -132,6 +142,13 @@ class FormDefinition(BaseModel):
 
     def field_by_name(self, name: str) -> Optional[FieldDefinition]:
         return next((f for f in self.fields if f.name == name), None)
+
+    @field_validator("submission_url", mode="before")
+    @classmethod
+    def _empty_submission_url(cls, value):
+        if value == "":
+            return None
+        return value
 
 
 class IntentDefinition(BaseModel):
@@ -222,3 +239,6 @@ class AgentState(TypedDict, total=False):
     tool_executed: bool
     tool_name: Optional[str]
     tool_response: Optional[Dict[str, Any]]
+    field_options: Dict[str, List[str]]
+    tool_hook_executed: List[str]
+    general_query: bool
