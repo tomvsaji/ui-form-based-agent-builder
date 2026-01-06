@@ -5,6 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type Intent = { id: string; name: string; description: string; target_form: string };
+type ToolCallConfig = {
+  tool_name: string;
+  input_map?: Record<string, string>;
+  output_map?: Record<string, string>;
+  output_path?: string | null;
+};
 type Field = {
   name: string;
   label: string;
@@ -12,6 +18,8 @@ type Field = {
   required?: boolean;
   dropdown_options?: string[];
   dropdown_tool?: string | null;
+  dropdown_tool_config?: ToolCallConfig | null;
+  tool_hook?: ToolCallConfig | null;
   pattern?: string;
   min_length?: number | null;
   max_length?: number | null;
@@ -85,6 +93,7 @@ type KnowledgeBaseConfig = {
   endpoint?: string | null;
   api_key?: string | null;
   index_name?: string | null;
+  knowledge_base_id?: number | null;
   retrieval_mode: "single-pass" | "agentic";
   max_agentic_passes: number;
   use_semantic_ranker: boolean;
@@ -139,11 +148,33 @@ export default function Home() {
   const [kbQuery, setKbQuery] = useState<string>("");
   const [kbResults, setKbResults] = useState<{ content: string; distance: number | null }[]>([]);
   const [kbFile, setKbFile] = useState<File | null>(null);
+  const [fieldDrafts, setFieldDrafts] = useState<Record<string, string>>({});
 
   const selectedForm = useMemo(
     () => formsCfg?.forms.find((f) => f.id === selectedFormId) || null,
     [formsCfg, selectedFormId]
   );
+
+  const updateFieldDraft = (key: string, value: string) => {
+    setFieldDrafts((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const getFieldDraft = (key: string, fallback: string) => {
+    return fieldDrafts[key] ?? fallback;
+  };
+
+  const parseJsonMap = (raw: string) => {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("JSON must be an object.");
+      }
+      return parsed as Record<string, string>;
+    } catch (err) {
+      setMessage(`Invalid JSON map: ${String(err)}`);
+      return null;
+    }
+  };
 
   const loadAll = async () => {
     setLoading(true);
@@ -345,7 +376,13 @@ export default function Home() {
       if (updates.name && updates.name !== fieldName) {
         updatedOrder = updatedOrder.map((n) => (n === fieldName ? updates.name as string : n));
       }
-      return { ...form, fields: updatedFields, field_order: updatedOrder };
+      const forceStepByStep = updates.type === "dropdown" || updates.type === "enum";
+      return {
+        ...form,
+        fields: updatedFields,
+        field_order: updatedOrder,
+        mode: forceStepByStep ? "step-by-step" : form.mode,
+      };
     });
     setFormsCfg({ ...formsCfg, forms: updatedForms });
   };
@@ -394,7 +431,15 @@ export default function Home() {
 
   const upsertForm = (updates: Partial<Form>) => {
     if (!formsCfg || !selectedForm) return;
-    const updatedForms = formsCfg.forms.map((form) => (form.id === selectedForm.id ? { ...form, ...updates } : form));
+    const updatedForms = formsCfg.forms.map((form) => {
+      if (form.id !== selectedForm.id) return form;
+      const hasDropdown = form.fields.some((f) => f.type === "dropdown" || f.type === "enum");
+      if (hasDropdown && updates.mode && updates.mode !== "step-by-step") {
+        setMessage("Dropdown fields require step-by-step mode.");
+        return { ...form, mode: "step-by-step" };
+      }
+      return { ...form, ...updates };
+    });
     setFormsCfg({ ...formsCfg, forms: updatedForms });
   };
 
@@ -508,7 +553,7 @@ export default function Home() {
             <button className="btn secondary" onClick={() => { setActiveTab("threads"); void loadThreads(); }}>
               View threads
             </button>
-            <button className="btn secondary" onClick={() => { setActiveTab("traces"); void loadTraces(); }}>
+            <button className="btn secondary" onClick={() => { setActiveTab("traces"); void loadThreads(); void loadTraces(); }}>
               Inspect traces
             </button>
             <button className="btn secondary" onClick={() => { setActiveTab("knowledge"); void loadKnowledgeBases(); }}>
@@ -677,10 +722,16 @@ export default function Home() {
                   <select
                     value={selectedForm.mode}
                     onChange={(e) => upsertForm({ mode: e.target.value as Form["mode"] })}
+                    disabled={selectedForm.fields.some((f) => f.type === "dropdown" || f.type === "enum")}
                   >
                     <option value="step-by-step">Step-by-step</option>
                     <option value="one-shot">One-shot</option>
                   </select>
+                  {selectedForm.fields.some((f) => f.type === "dropdown" || f.type === "enum") && (
+                    <div className="text-sm text-slate-600">
+                      Dropdown fields require step-by-step mode.
+                    </div>
+                  )}
                   <input
                     value={selectedForm.submission_url || ""}
                     onChange={(e) => upsertForm({ submission_url: e.target.value })}
@@ -697,6 +748,9 @@ export default function Home() {
                   {selectedForm.field_order.map((fname) => {
                     const field = selectedForm.fields.find((f) => f.name === fname);
                     if (!field) return null;
+                    const dropdownToolKey = `${selectedForm.id}:${fname}:dropdown_input`;
+                    const hookInputKey = `${selectedForm.id}:${fname}:hook_input`;
+                    const hookOutputKey = `${selectedForm.id}:${fname}:hook_output`;
                     return (
                       <div key={fname} className="border rounded p-3 space-y-2">
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -727,7 +781,7 @@ export default function Home() {
                             value={field.type}
                             onChange={(e) => updateFormField(fname, { type: e.target.value as Field["type"] })}
                           >
-                            {["text", "number", "date", "boolean", "dropdown"].map((t) => (
+                            {["text", "number", "date", "boolean", "dropdown", "enum"].map((t) => (
                               <option key={t} value={t}>
                                 {t}
                               </option>
@@ -742,7 +796,7 @@ export default function Home() {
                           />{" "}
                           Required
                         </label>
-                        {field.type === "dropdown" && (
+                        {(field.type === "dropdown" || field.type === "enum") && (
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
                             <input
                               value={(field.dropdown_options || []).join(",")}
@@ -752,8 +806,20 @@ export default function Home() {
                               placeholder="Static options (comma separated)"
                             />
                             <select
-                              value={field.dropdown_tool || ""}
-                              onChange={(e) => updateFormField(fname, { dropdown_tool: e.target.value || null })}
+                              value={field.dropdown_tool_config?.tool_name || field.dropdown_tool || ""}
+                              onChange={(e) => {
+                                const toolName = e.target.value || null;
+                                updateFormField(fname, {
+                                  dropdown_tool: toolName,
+                                  dropdown_tool_config: toolName
+                                    ? {
+                                        tool_name: toolName,
+                                        input_map: field.dropdown_tool_config?.input_map || {},
+                                        output_path: field.dropdown_tool_config?.output_path || null,
+                                      }
+                                    : null,
+                                });
+                              }}
                             >
                               <option value="">Dropdown from tool (optional)</option>
                               {toolsCfg?.tools.map((t) => (
@@ -764,6 +830,108 @@ export default function Home() {
                             </select>
                           </div>
                         )}
+                        {(field.type === "dropdown" || field.type === "enum") && field.dropdown_tool_config?.tool_name && (
+                          <div className="border rounded p-2 space-y-2">
+                            <div className="text-sm font-medium">Dropdown tool mapping</div>
+                            <textarea
+                              value={getFieldDraft(
+                                dropdownToolKey,
+                                JSON.stringify(field.dropdown_tool_config?.input_map || {}, null, 2)
+                              )}
+                              onChange={(e) => updateFieldDraft(dropdownToolKey, e.target.value)}
+                              onBlur={(e) => {
+                                const parsed = parseJsonMap(e.target.value);
+                                if (!parsed) return;
+                                updateFormField(fname, {
+                                  dropdown_tool_config: {
+                                    ...(field.dropdown_tool_config || { tool_name: "" }),
+                                    input_map: parsed,
+                                  },
+                                });
+                              }}
+                              placeholder='{"query":"form.company"}'
+                            />
+                            <input
+                              value={field.dropdown_tool_config?.output_path || ""}
+                              onChange={(e) =>
+                                updateFormField(fname, {
+                                  dropdown_tool_config: {
+                                    ...(field.dropdown_tool_config || { tool_name: "" }),
+                                    output_path: e.target.value || null,
+                                  },
+                                })
+                              }
+                              placeholder="Options output path (optional, e.g. data.items)"
+                            />
+                          </div>
+                        )}
+                        <div className="border rounded p-2 space-y-2">
+                          <div className="text-sm font-medium">Tool hook (optional)</div>
+                          <select
+                            value={field.tool_hook?.tool_name || ""}
+                            onChange={(e) => {
+                              const toolName = e.target.value || null;
+                              updateFormField(fname, {
+                                tool_hook: toolName
+                                  ? {
+                                      tool_name: toolName,
+                                      input_map: field.tool_hook?.input_map || {},
+                                      output_map: field.tool_hook?.output_map || {},
+                                    }
+                                  : null,
+                              });
+                            }}
+                          >
+                            <option value="">No tool hook</option>
+                            {toolsCfg?.tools.map((t) => (
+                              <option key={t.name} value={t.name}>
+                                {t.name}
+                              </option>
+                            ))}
+                          </select>
+                          {field.tool_hook?.tool_name && (
+                            <>
+                              <textarea
+                                value={getFieldDraft(
+                                  hookInputKey,
+                                  JSON.stringify(field.tool_hook?.input_map || {}, null, 2)
+                                )}
+                                onChange={(e) => updateFieldDraft(hookInputKey, e.target.value)}
+                                onBlur={(e) => {
+                                  const parsed = parseJsonMap(e.target.value);
+                                  if (!parsed) return;
+                                  updateFormField(fname, {
+                                    tool_hook: {
+                                      ...(field.tool_hook || { tool_name: "" }),
+                                      input_map: parsed,
+                                      output_map: field.tool_hook?.output_map || {},
+                                    },
+                                  });
+                                }}
+                                placeholder='{"customer_id":"form.customer_id"}'
+                              />
+                              <textarea
+                                value={getFieldDraft(
+                                  hookOutputKey,
+                                  JSON.stringify(field.tool_hook?.output_map || {}, null, 2)
+                                )}
+                                onChange={(e) => updateFieldDraft(hookOutputKey, e.target.value)}
+                                onBlur={(e) => {
+                                  const parsed = parseJsonMap(e.target.value);
+                                  if (!parsed) return;
+                                  updateFormField(fname, {
+                                    tool_hook: {
+                                      ...(field.tool_hook || { tool_name: "" }),
+                                      input_map: field.tool_hook?.input_map || {},
+                                      output_map: parsed,
+                                    },
+                                  });
+                                }}
+                                placeholder='{"plan_name":"plan.name"}'
+                              />
+                            </>
+                          )}
+                        </div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
                           <input
                             value={field.pattern || ""}
@@ -902,6 +1070,17 @@ export default function Home() {
                 <option value="pgvector">Postgres pgvector</option>
                 <option value="none">None</option>
               </select>
+              <input
+                type="number"
+                placeholder="Default KB ID (optional)"
+                value={knowledgeCfg.knowledge_base_id ?? ""}
+                onChange={(e) =>
+                  setKnowledgeCfg({
+                    ...knowledgeCfg,
+                    knowledge_base_id: e.target.value ? Number(e.target.value) : null,
+                  })
+                }
+              />
               <select
                 value={knowledgeCfg.retrieval_mode}
                 onChange={(e) =>
@@ -1129,14 +1308,101 @@ export default function Home() {
                   Refresh traces
                 </button>
               </div>
-              {traces.length === 0 && <p>No trace logs yet.</p>}
-              {traces.map((trace) => (
-                <div key={trace.trace_id} className="border rounded p-3">
-                  <div style={{ fontWeight: 600 }}>Trace {trace.trace_id}</div>
-                  <div className="text-sm text-slate-600">Thread: {trace.thread_id} · Version: {trace.version}</div>
-                  <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(trace.data, null, 2)}</pre>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-2">
+                  <div className="text-sm text-slate-600">Threads</div>
+                  {threads.length === 0 && <p>No threads yet.</p>}
+                  {threads.map((t) => (
+                    <button
+                      key={t.thread_id}
+                      className={`btn secondary w-full ${selectedThreadId === t.thread_id ? "ring-2 ring-slate-800" : ""}`}
+                      onClick={() => {
+                        setSelectedThreadId(t.thread_id);
+                        void loadTraces(t.thread_id);
+                      }}
+                    >
+                      {t.thread_id}
+                    </button>
+                  ))}
                 </div>
-              ))}
+                <div className="space-y-2 col-span-2">
+                  {selectedThreadId && (
+                    <div className="text-sm text-slate-600">Thread: {selectedThreadId}</div>
+                  )}
+                  {traces.length === 0 && <p>No trace logs yet.</p>}
+                  {traces.map((trace) => {
+                    const data = trace.data || {};
+                    const input = data.input || "";
+                    const output = data.output || "";
+                    const tokens = data.tokens || {};
+                    const tools = data.tools || {};
+                    const events = data.events || [];
+                    const state = data.state || {};
+                    return (
+                      <div key={trace.trace_id} className="border rounded p-3 space-y-2">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>Trace {trace.trace_id}</div>
+                            <div className="text-sm text-slate-600">
+                              Version: {trace.version}
+                              {trace.created_at ? ` · ${trace.created_at}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-sm">
+                          <strong>Input:</strong> {String(input).slice(0, 160)}
+                        </div>
+                        <div className="text-sm">
+                          <strong>Output:</strong> {String(output).slice(0, 160)}
+                        </div>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Input</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(input, null, 2)}</pre>
+                        </details>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Output</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(output, null, 2)}</pre>
+                        </details>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Tokens</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tokens, null, 2)}</pre>
+                        </details>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Tools</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tools, null, 2)}</pre>
+                        </details>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Events</summary>
+                          {Array.isArray(events) && events.length > 0 ? (
+                            <div className="space-y-2" style={{ marginTop: 8 }}>
+                              {events.map((evt: any, idx: number) => {
+                                const title = evt?.node || evt?.stage || `event_${idx + 1}`;
+                                return (
+                                  <details key={`${trace.trace_id}-evt-${idx}`} className="border rounded p-2">
+                                    <summary className="cursor-pointer text-sm font-medium">
+                                      {title}
+                                      {evt?.ts ? ` · ${new Date(evt.ts * 1000).toLocaleTimeString()}` : ""}
+                                    </summary>
+                                    <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                                      {JSON.stringify(evt, null, 2)}
+                                    </pre>
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
+                          )}
+                        </details>
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">State</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(state, null, 2)}</pre>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
 

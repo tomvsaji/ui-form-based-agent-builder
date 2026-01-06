@@ -94,7 +94,7 @@ class KnowledgeDocument(Base):
     kb_id: Mapped[int] = mapped_column(BigInteger, index=True)
     content: Mapped[str] = mapped_column(Text)
     doc_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

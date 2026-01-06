@@ -1,18 +1,30 @@
 version: "3.9"
 
 services:
+  postgres:
+    ports:
+      - "5432:5432"
+
   builder-backend:
     command: ["uvicorn", "app.builder_main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     volumes:
       - ./app:/app/app
       - ./config:/app/config
     environment:
+      - POSTGRES_DSN=${POSTGRES_DSN:-postgresql+psycopg://agent:agent@postgres:5432/agent_builder}
+      - TENANT_ID=${TENANT_ID:-local}
+      - AGENT_ID=${AGENT_ID:-default}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - LLM_ROUTING_ENABLED=${LLM_ROUTING_ENABLED:-true}
       - LLM_EXTRACTION_ENABLED=${LLM_EXTRACTION_ENABLED:-true}
       - TOOLS_ENABLED=${TOOLS_ENABLED:-false}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-10-21}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-}
+      - AZURE_OPENAI_EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-}
 
   runtime-api:
     command: ["uvicorn", "app.runtime_main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
@@ -20,12 +32,22 @@ services:
       - ./app:/app/app
       - ./config:/app/config
     environment:
+      - POSTGRES_DSN=${POSTGRES_DSN:-postgresql+psycopg://agent:agent@postgres:5432/agent_builder}
+      - TENANT_ID=${TENANT_ID:-local}
+      - AGENT_ID=${AGENT_ID:-default}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-900}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - LLM_ROUTING_ENABLED=${LLM_ROUTING_ENABLED:-true}
       - LLM_EXTRACTION_ENABLED=${LLM_EXTRACTION_ENABLED:-true}
       - TOOLS_ENABLED=${TOOLS_ENABLED:-false}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-10-21}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-}
+      - AZURE_OPENAI_EMBEDDING_DEPLOYMENT=${AZURE_OPENAI_EMBEDDING_DEPLOYMENT:-}
 
   builder-frontend:
     build:
