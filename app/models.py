@@ -29,6 +29,13 @@ class KnowledgeBaseConfig(BaseModel):
     max_agentic_passes: int = 3
     use_semantic_ranker: bool = True
 
+    @field_validator("endpoint", "api_key", "index_name", mode="before")
+    @classmethod
+    def _empty_to_none(cls, value):
+        if value == "":
+            return None
+        return value
+
 
 class FieldUIConfig(BaseModel):
     placeholder: Optional[str] = None
@@ -227,6 +234,7 @@ class AgentState(TypedDict, total=False):
     thread_id: str
     messages: List[Dict[str, str]]
     last_user_message: Optional[str]
+    reply: Optional[str]
     current_intent: Optional[str]
     current_form_id: Optional[str]
     current_step_index: int

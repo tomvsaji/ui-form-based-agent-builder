@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 
 from .db import session_scope
 from .db_models import (
@@ -253,6 +253,40 @@ def list_knowledge_bases(tenant_id: str) -> List[Dict[str, Any]]:
             }
             for kb in session.execute(stmt).scalars().all()
         ]
+
+
+def delete_knowledge_base(tenant_id: str, kb_id: int) -> None:
+    with session_scope() as session:
+        session.execute(
+            delete(KnowledgeDocument).where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.kb_id == kb_id,
+            )
+        )
+        session.execute(
+            delete(KnowledgeBase).where(
+                KnowledgeBase.tenant_id == tenant_id,
+                KnowledgeBase.id == kb_id,
+            )
+        )
+
+
+def list_kb_files(tenant_id: str, kb_id: int) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(KnowledgeDocument.doc_metadata, KnowledgeDocument.created_at).where(
+            KnowledgeDocument.tenant_id == tenant_id,
+            KnowledgeDocument.kb_id == kb_id,
+        )
+        files: Dict[str, Dict[str, Any]] = {}
+        for row in session.execute(stmt):
+            metadata = row.doc_metadata or {}
+            filename = metadata.get("filename") or "manual_entry"
+            entry = files.setdefault(filename, {"filename": filename, "chunks": 0, "last_indexed_at": None})
+            entry["chunks"] += 1
+            created_at = row.created_at.isoformat() if row.created_at else None
+            if created_at and (entry["last_indexed_at"] is None or created_at > entry["last_indexed_at"]):
+                entry["last_indexed_at"] = created_at
+        return sorted(files.values(), key=lambda item: item["last_indexed_at"] or "", reverse=True)
 
 
 def add_kb_document(

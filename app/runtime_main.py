@@ -96,6 +96,9 @@ def chat(req: RuntimeMessageRequest):
     cached_state = cache_get(redis_client, cache_key) if redis_client else None
     previous_state = cached_state or get_thread_state(tenant_id, agent_id, version, req.thread_id) or {}
     state_input: Dict[str, Any] = {**previous_state, "thread_id": req.thread_id, "last_user_message": req.message}
+    state_input.pop("reply", None)
+    state_input["trace_events"] = []
+    state_input["llm_usage"] = {}
 
     result = graph_app.invoke(state_input, config={"configurable": {"thread_id": req.thread_id}})
     form = forms_config.form_by_id(result.get("current_form_id", "")) if result.get("current_form_id") else None
@@ -135,14 +138,22 @@ def chat(req: RuntimeMessageRequest):
             result["tool_executed"] = True
             result["tool_name"] = tool_to_call.name
             result["tool_response"] = tool_result
-            result.setdefault("trace_events", []).append({"stage": "tool_call", "tool": tool_to_call.name, "result": tool_result})
+            result.setdefault("trace_events", []).append(
+                {"node": "tool_execution", "event": "tool_call", "tool": tool_to_call.name, "result": tool_result}
+            )
 
-    upsert_thread_state(tenant_id, agent_id, version, req.thread_id, result)
+    events = list(result.get("trace_events", []))
+    state_before = _state_summary(previous_state)
+    state_after = _state_summary(result)
+    state_for_storage = dict(result)
+    state_for_storage.pop("trace_events", None)
+
+    upsert_thread_state(tenant_id, agent_id, version, req.thread_id, state_for_storage)
     if redis_client:
         ttl = int(os.getenv("CACHE_TTL_SECONDS", "900"))
-        cache_set(redis_client, cache_key, result, ttl)
+        cache_set(redis_client, cache_key, state_for_storage, ttl)
     log_chat(tenant_id, agent_id, version, req.thread_id, "user", req.message)
-    log_chat(tenant_id, agent_id, version, req.thread_id, "assistant", reply, state=result)
+    log_chat(tenant_id, agent_id, version, req.thread_id, "assistant", reply, state=state_for_storage)
     trace_id = str(uuid.uuid4())
     log_trace(
         tenant_id,
@@ -155,15 +166,10 @@ def chat(req: RuntimeMessageRequest):
             "output": reply,
             "tokens": result.get("llm_usage", {}),
             "tools": result.get("tool_response"),
-            "events": result.get("trace_events", []),
-            "state": {
-                "current_intent": result.get("current_intent"),
-                "current_form_id": result.get("current_form_id"),
-                "current_step_index": result.get("current_step_index"),
-                "awaiting_field": result.get("awaiting_field"),
-                "form_values": result.get("form_values"),
-                "completed": result.get("completed"),
-            },
+            "events": events,
+            "state": state_after,
+            "state_before": state_before,
+            "state_after": state_after,
         },
     )
     logger.info("Processed message for thread %s", req.thread_id)
@@ -211,6 +217,19 @@ def _extract_tool_body(tool_result: Dict[str, Any]) -> Any:
         response = tool_result.get("response", {})
         return response.get("body", response)
     return tool_result
+
+
+def _state_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "current_intent": state.get("current_intent"),
+        "current_form_id": state.get("current_form_id"),
+        "current_step_index": state.get("current_step_index"),
+        "awaiting_field": state.get("awaiting_field"),
+        "form_values": state.get("form_values"),
+        "completed": state.get("completed"),
+        "tool_name": state.get("tool_name"),
+        "tool_executed": state.get("tool_executed"),
+    }
 
 
 def _normalize_options(raw_options: Any) -> List[str]:
@@ -271,7 +290,12 @@ def _maybe_fetch_dropdown_options(
     tool = _find_tool(tools_config, tool_cfg.tool_name)
     if not tool:
         state.setdefault("trace_events", []).append(
-            {"stage": "dropdown_tool", "field": field_name, "error": f"Tool '{tool_cfg.tool_name}' not found"}
+            {
+                "node": "dropdown_tool",
+                "event": "tool_missing",
+                "field": field_name,
+                "error": f"Tool '{tool_cfg.tool_name}' not found",
+            }
         )
         return
 
@@ -284,7 +308,8 @@ def _maybe_fetch_dropdown_options(
         state.setdefault("field_options", {})[field_name] = options
     state.setdefault("trace_events", []).append(
         {
-            "stage": "dropdown_tool",
+            "node": "dropdown_tool",
+            "event": "tool_call",
             "field": field_name,
             "tool": tool.name,
             "input": payload,
@@ -329,7 +354,12 @@ def _maybe_run_tool_hook(
     tool = _find_tool(tools_config, tool_cfg.tool_name)
     if not tool:
         state.setdefault("trace_events", []).append(
-            {"stage": "tool_hook", "field": field_name, "error": f"Tool '{tool_cfg.tool_name}' not found"}
+            {
+                "node": "tool_hook",
+                "event": "tool_missing",
+                "field": field_name,
+                "error": f"Tool '{tool_cfg.tool_name}' not found",
+            }
         )
         return
 
@@ -340,7 +370,8 @@ def _maybe_run_tool_hook(
     state.setdefault("tool_hook_executed", []).append(hook_key)
     state.setdefault("trace_events", []).append(
         {
-            "stage": "tool_hook",
+            "node": "tool_hook",
+            "event": "tool_call",
             "field": field_name,
             "tool": tool.name,
             "input": payload,
