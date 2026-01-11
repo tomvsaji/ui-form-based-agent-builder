@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_RUNTIME_BASE || "/runtime";
+const BUILDER_API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type Form = {
   id: string;
@@ -25,6 +26,7 @@ type ChatState = {
   awaiting_field?: boolean;
   field_options?: Record<string, string[]>;
 };
+type TraceLog = { trace_id: string; thread_id: string; version: number; data: Record<string, unknown>; created_at?: string | null };
 
 export default function ChatTester() {
   const [forms, setForms] = useState<Form[]>([]);
@@ -36,6 +38,7 @@ export default function ChatTester() {
   const [selectedFormId, setSelectedFormId] = useState<string>("");
   const [lastState, setLastState] = useState<ChatState | null>(null);
   const [selectValue, setSelectValue] = useState<string>("");
+  const [threadTraces, setThreadTraces] = useState<TraceLog[]>([]);
 
   const defaultFormName = useMemo(() => forms[0]?.name || "", [forms]);
   const selectedForm = useMemo(
@@ -90,6 +93,18 @@ export default function ChatTester() {
     void loadForms();
   }, []);
 
+  const loadThreadTraces = async (threadIdValue: string) => {
+    if (!threadIdValue) return;
+    try {
+      const res = await fetch(`${BUILDER_API_BASE}/traces?thread_id=${encodeURIComponent(threadIdValue)}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setThreadTraces(data.traces || []);
+    } catch (err) {
+      setStatus(`Failed to load traces: ${String(err)}`);
+    }
+  };
+
   const sendMessage = async () => {
     const messageToSend = input.trim();
     if (!messageToSend) return;
@@ -108,6 +123,7 @@ export default function ChatTester() {
       const assistantMsg: ChatTurn = { role: "assistant", content: data.reply };
       setLog((prev) => [...prev, assistantMsg]);
       setLastState(data.state || null);
+      void loadThreadTraces(threadId);
       setStatus("Message processed.");
       setInput("");
       setSelectValue("");
@@ -121,8 +137,16 @@ export default function ChatTester() {
   const resetThread = () => {
     setThreadId(`thread-${Date.now()}`);
     setLog([]);
+    setLastState(null);
+    setInput("");
+    setSelectValue("");
+    setThreadTraces([]);
     setStatus("New thread created.");
   };
+
+  useEffect(() => {
+    resetThread();
+  }, []);
 
   return (
     <main style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 16px" }}>
@@ -229,40 +253,88 @@ export default function ChatTester() {
           </div>
         </div>
 
-        <div className="card">
-          <h2 style={{ marginTop: 0 }}>Form preview</h2>
-          {forms.length === 0 && <p>No forms loaded yet.</p>}
-          {forms.length > 0 && (
-            <>
-              <select
-                className="w-full"
-                value={selectedForm?.id || ""}
-                onChange={(e) => setSelectedFormId(e.target.value)}
-              >
-                {forms.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              {selectedForm && (
-                <div className="space-y-2" style={{ marginTop: 12 }}>
-                  <div className="text-sm text-slate-600">{selectedForm.description}</div>
-                  {selectedForm.fields?.map((field) => (
-                    <div key={field.name} className="border rounded p-2">
-                      <div style={{ fontWeight: 600 }}>{field.label}</div>
-                      <div className="text-sm text-slate-600">{field.type}</div>
-                      {field.type === "dropdown" && field.dropdown_options && (
-                        <div className="text-sm" style={{ marginTop: 4 }}>
-                          Options: {field.dropdown_options.join(", ")}
-                        </div>
-                      )}
-                    </div>
+        <div className="space-y-3">
+          <div className="card">
+            <h2 style={{ marginTop: 0 }}>Form preview</h2>
+            {forms.length === 0 && <p>No forms loaded yet.</p>}
+            {forms.length > 0 && (
+              <>
+                <select
+                  className="w-full"
+                  value={selectedForm?.id || ""}
+                  onChange={(e) => setSelectedFormId(e.target.value)}
+                >
+                  {forms.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
                   ))}
-                </div>
-              )}
-            </>
-          )}
+                </select>
+                {selectedForm && (
+                  <div className="space-y-2" style={{ marginTop: 12 }}>
+                    <div className="text-sm text-slate-600">{selectedForm.description}</div>
+                    {selectedForm.fields?.map((field) => (
+                      <div key={field.name} className="border rounded p-2">
+                        <div style={{ fontWeight: 600 }}>{field.label}</div>
+                        <div className="text-sm text-slate-600">{field.type}</div>
+                        {field.type === "dropdown" && field.dropdown_options && (
+                          <div className="text-sm" style={{ marginTop: 4 }}>
+                            Options: {field.dropdown_options.join(", ")}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ marginTop: 0 }}>Thread traces</h2>
+              <button className="btn secondary" onClick={() => loadThreadTraces(threadId)}>
+                Refresh
+              </button>
+            </div>
+            {threadTraces.length === 0 && <p className="text-sm text-slate-600">No traces yet.</p>}
+            {threadTraces.map((trace) => {
+              const data = trace.data || {};
+              const input = data.input || "";
+              const output = data.output || "";
+              const events = data.events || [];
+              return (
+                <details key={trace.trace_id} className="border rounded p-2">
+                  <summary className="cursor-pointer text-sm font-medium">
+                    {trace.created_at ? new Date(trace.created_at).toLocaleString() : trace.trace_id}
+                  </summary>
+                  <div className="text-sm" style={{ marginTop: 8 }}>
+                    <strong>Input:</strong> {String(input).slice(0, 120)}
+                  </div>
+                  <div className="text-sm">
+                    <strong>Output:</strong> {String(output).slice(0, 120)}
+                  </div>
+                  <details className="border rounded p-2" style={{ marginTop: 8 }}>
+                    <summary className="cursor-pointer text-sm font-medium">Event flow</summary>
+                    {Array.isArray(events) && events.length > 0 ? (
+                      <ol style={{ marginTop: 8, paddingLeft: 18 }}>
+                        {events.map((evt: any, idx: number) => {
+                          const phaseLabel = evt?.phase ? ` (${evt.phase})` : "";
+                          const title = evt?.node ? `${evt.node}${phaseLabel}` : evt?.event || `event_${idx + 1}`;
+                          return (
+                            <li key={`${trace.trace_id}-evt-${idx}`} className="text-sm">
+                              {title}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    ) : (
+                      <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
+                    )}
+                  </details>
+                </details>
+              );
+            })}
+          </div>
         </div>
       </div>
     </main>

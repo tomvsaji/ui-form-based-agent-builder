@@ -144,10 +144,11 @@ export default function Home() {
   const [kbName, setKbName] = useState<string>("");
   const [kbDescription, setKbDescription] = useState<string>("");
   const [kbProvider, setKbProvider] = useState<"pgvector" | "azure_ai_search">("pgvector");
-  const [kbDocContent, setKbDocContent] = useState<string>("");
-  const [kbQuery, setKbQuery] = useState<string>("");
-  const [kbResults, setKbResults] = useState<{ content: string; distance: number | null }[]>([]);
-  const [kbFile, setKbFile] = useState<File | null>(null);
+  const [kbDocContent, setKbDocContent] = useState<Record<number, string>>({});
+  const [kbQuery, setKbQuery] = useState<Record<number, string>>({});
+  const [kbResults, setKbResults] = useState<Record<number, { content: string; distance: number | null }[]>>({});
+  const [kbFile, setKbFile] = useState<Record<number, File | null>>({});
+  const [uploadingKbId, setUploadingKbId] = useState<number | null>(null);
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, string>>({});
 
   const selectedForm = useMemo(
@@ -203,6 +204,12 @@ export default function Home() {
     void loadAll();
   }, []);
 
+  useEffect(() => {
+    if (knowledgeCfg?.provider === "pgvector") {
+      void loadKnowledgeBases();
+    }
+  }, [knowledgeCfg?.provider]);
+
   const loadThreads = async () => {
     try {
       const res = await fetch(`${API_BASE}/threads`);
@@ -223,6 +230,7 @@ export default function Home() {
       const data = await res.json();
       setThreadMessages(data.messages || []);
       setSelectedThreadId(threadId);
+      void loadTraces(threadId);
     } catch (err) {
       setMessage(`Failed to load thread: ${String(err)}`);
     }
@@ -273,7 +281,8 @@ export default function Home() {
   };
 
   const addKnowledgeDocument = async (kbId: number) => {
-    if (!kbDocContent.trim()) {
+    const content = (kbDocContent[kbId] || "").trim();
+    if (!content) {
       setMessage("Document content is required.");
       return;
     }
@@ -281,10 +290,10 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/documents`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: kbDocContent }),
+        body: JSON.stringify({ content }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setKbDocContent("");
+      setKbDocContent((prev) => ({ ...prev, [kbId]: "" }));
       setMessage("Document indexed.");
     } catch (err) {
       setMessage(`Indexing failed: ${String(err)}`);
@@ -292,36 +301,42 @@ export default function Home() {
   };
 
   const uploadKnowledgeFile = async (kbId: number) => {
-    if (!kbFile) {
+    const file = kbFile[kbId];
+    if (!file) {
       setMessage("Choose a file to upload.");
       return;
     }
+    if (uploadingKbId) return;
+    setUploadingKbId(kbId);
     const formData = new FormData();
-    formData.append("file", kbFile);
+    formData.append("file", file);
     try {
       const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/upload`, {
         method: "POST",
         body: formData,
       });
       if (!res.ok) throw new Error(await res.text());
-      setKbFile(null);
+      setKbFile((prev) => ({ ...prev, [kbId]: null }));
       setMessage("File indexed.");
     } catch (err) {
       setMessage(`Upload failed: ${String(err)}`);
+    } finally {
+      setUploadingKbId(null);
     }
   };
 
   const searchKnowledgeBase = async (kbId: number) => {
-    if (!kbQuery.trim()) return;
+    const query = (kbQuery[kbId] || "").trim();
+    if (!query) return;
     try {
       const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: kbQuery, limit: 5 }),
+        body: JSON.stringify({ query, limit: 5 }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setKbResults(data.results || []);
+      setKbResults((prev) => ({ ...prev, [kbId]: data.results || [] }));
     } catch (err) {
       setMessage(`Search failed: ${String(err)}`);
     }
@@ -1064,23 +1079,51 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-2">
               <select
                 value={knowledgeCfg.provider}
-                onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, provider: e.target.value as KnowledgeBaseConfig["provider"] })}
+                onChange={(e) => {
+                  const provider = e.target.value as KnowledgeBaseConfig["provider"];
+                  setKnowledgeCfg({
+                    ...knowledgeCfg,
+                    provider,
+                    ...(provider === "pgvector"
+                      ? { endpoint: "", index_name: "", api_key: "" }
+                      : {}),
+                  });
+                }}
               >
                 <option value="azure_ai_search">Azure AI Search</option>
                 <option value="pgvector">Postgres pgvector</option>
                 <option value="none">None</option>
               </select>
-              <input
-                type="number"
-                placeholder="Default KB ID (optional)"
-                value={knowledgeCfg.knowledge_base_id ?? ""}
-                onChange={(e) =>
-                  setKnowledgeCfg({
-                    ...knowledgeCfg,
-                    knowledge_base_id: e.target.value ? Number(e.target.value) : null,
-                  })
-                }
-              />
+              {knowledgeCfg.provider === "pgvector" ? (
+                <select
+                  value={knowledgeCfg.knowledge_base_id ?? ""}
+                  onChange={(e) =>
+                    setKnowledgeCfg({
+                      ...knowledgeCfg,
+                      knowledge_base_id: e.target.value ? Number(e.target.value) : null,
+                    })
+                  }
+                >
+                  <option value="">Select default KB (optional)</option>
+                  {knowledgeBases.map((kb) => (
+                    <option key={kb.id} value={kb.id}>
+                      {kb.name} (#{kb.id})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="number"
+                  placeholder="Default KB ID (optional)"
+                  value={knowledgeCfg.knowledge_base_id ?? ""}
+                  onChange={(e) =>
+                    setKnowledgeCfg({
+                      ...knowledgeCfg,
+                      knowledge_base_id: e.target.value ? Number(e.target.value) : null,
+                    })
+                  }
+                />
+              )}
               <select
                 value={knowledgeCfg.retrieval_mode}
                 onChange={(e) =>
@@ -1091,25 +1134,29 @@ export default function Home() {
                 <option value="agentic">Agentic multi-step retrieval</option>
               </select>
             </div>
-            <input
-              className="w-full"
-              placeholder="Search endpoint"
-              value={knowledgeCfg.endpoint || ""}
-              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, endpoint: e.target.value })}
-            />
-            <input
-              className="w-full"
-              placeholder="Index name"
-              value={knowledgeCfg.index_name || ""}
-              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, index_name: e.target.value })}
-            />
-            <input
-              className="w-full"
-              type="password"
-              placeholder="API key"
-              value={knowledgeCfg.api_key || ""}
-              onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, api_key: e.target.value })}
-            />
+            {knowledgeCfg.provider === "azure_ai_search" && (
+              <>
+                <input
+                  className="w-full"
+                  placeholder="Search endpoint"
+                  value={knowledgeCfg.endpoint || ""}
+                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, endpoint: e.target.value })}
+                />
+                <input
+                  className="w-full"
+                  placeholder="Index name"
+                  value={knowledgeCfg.index_name || ""}
+                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, index_name: e.target.value })}
+                />
+                <input
+                  className="w-full"
+                  type="password"
+                  placeholder="API key"
+                  value={knowledgeCfg.api_key || ""}
+                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, api_key: e.target.value })}
+                />
+              </>
+            )}
             <div className="grid grid-cols-2 gap-2 items-center">
               <label>Max agentic passes (for iterative retrieval)</label>
               <input
@@ -1337,7 +1384,11 @@ export default function Home() {
                     const tokens = data.tokens || {};
                     const tools = data.tools || {};
                     const events = data.events || [];
-                    const state = data.state || {};
+                    const stateBefore = data.state_before || {};
+                    const stateAfter = data.state_after || data.state || {};
+                    const tokenSummary = Object.entries(tokens as Record<string, unknown>)
+                      .map(([key, value]) => `${key}: ${String(value)}`)
+                      .join(", ");
                     return (
                       <div key={trace.trace_id} className="border rounded p-3 space-y-2">
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1355,6 +1406,30 @@ export default function Home() {
                         <div className="text-sm">
                           <strong>Output:</strong> {String(output).slice(0, 160)}
                         </div>
+                        {tokenSummary && (
+                          <div className="text-sm">
+                            <strong>Tokens:</strong> {tokenSummary}
+                          </div>
+                        )}
+                        <details className="border rounded p-2">
+                          <summary className="cursor-pointer font-medium">Event flow</summary>
+                          {Array.isArray(events) && events.length > 0 ? (
+                            <ol style={{ marginTop: 8, paddingLeft: 18 }}>
+                              {events.map((evt: any, idx: number) => {
+                                const phaseLabel = evt?.phase ? ` (${evt.phase})` : "";
+                                const title = evt?.node ? `${evt.node}${phaseLabel}` : evt?.event || `event_${idx + 1}`;
+                                return (
+                                  <li key={`${trace.trace_id}-evt-${idx}`} className="text-sm">
+                                    {title}
+                                    {evt?.ts ? ` · ${new Date(evt.ts * 1000).toLocaleTimeString()}` : ""}
+                                  </li>
+                                );
+                              })}
+                            </ol>
+                          ) : (
+                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
+                          )}
+                        </details>
                         <details className="border rounded p-2">
                           <summary className="cursor-pointer font-medium">Input</summary>
                           <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(input, null, 2)}</pre>
@@ -1372,31 +1447,16 @@ export default function Home() {
                           <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tools, null, 2)}</pre>
                         </details>
                         <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Events</summary>
-                          {Array.isArray(events) && events.length > 0 ? (
-                            <div className="space-y-2" style={{ marginTop: 8 }}>
-                              {events.map((evt: any, idx: number) => {
-                                const title = evt?.node || evt?.stage || `event_${idx + 1}`;
-                                return (
-                                  <details key={`${trace.trace_id}-evt-${idx}`} className="border rounded p-2">
-                                    <summary className="cursor-pointer text-sm font-medium">
-                                      {title}
-                                      {evt?.ts ? ` · ${new Date(evt.ts * 1000).toLocaleTimeString()}` : ""}
-                                    </summary>
-                                    <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
-                                      {JSON.stringify(evt, null, 2)}
-                                    </pre>
-                                  </details>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
-                          )}
+                          <summary className="cursor-pointer font-medium">State before</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                            {JSON.stringify(stateBefore, null, 2)}
+                          </pre>
                         </details>
                         <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">State</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(state, null, 2)}</pre>
+                          <summary className="cursor-pointer font-medium">State after</summary>
+                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                            {JSON.stringify(stateAfter, null, 2)}
+                          </pre>
                         </details>
                       </div>
                     );
@@ -1441,16 +1501,22 @@ export default function Home() {
                         <input
                           type="file"
                           accept=".txt,.md,.pdf"
-                          onChange={(e) => setKbFile(e.target.files?.[0] || null)}
+                          onChange={(e) =>
+                            setKbFile((prev) => ({ ...prev, [kb.id]: e.target.files?.[0] || null }))
+                          }
                         />
-                        <button className="btn secondary" onClick={() => uploadKnowledgeFile(kb.id)}>
-                          Upload file
+                        <button
+                          className="btn secondary"
+                          onClick={() => uploadKnowledgeFile(kb.id)}
+                          disabled={uploadingKbId === kb.id}
+                        >
+                          {uploadingKbId === kb.id ? "Uploading..." : "Upload file"}
                         </button>
                         <textarea
                           className="w-full"
                           placeholder="Paste content to index"
-                          value={kbDocContent}
-                          onChange={(e) => setKbDocContent(e.target.value)}
+                          value={kbDocContent[kb.id] || ""}
+                          onChange={(e) => setKbDocContent((prev) => ({ ...prev, [kb.id]: e.target.value }))}
                         />
                         <button className="btn secondary" onClick={() => addKnowledgeDocument(kb.id)}>
                           Index content
@@ -1458,15 +1524,15 @@ export default function Home() {
                         <input
                           className="w-full"
                           placeholder="Search query"
-                          value={kbQuery}
-                          onChange={(e) => setKbQuery(e.target.value)}
+                          value={kbQuery[kb.id] || ""}
+                          onChange={(e) => setKbQuery((prev) => ({ ...prev, [kb.id]: e.target.value }))}
                         />
                         <button className="btn secondary" onClick={() => searchKnowledgeBase(kb.id)}>
                           Search
                         </button>
-                        {kbResults.length > 0 && (
+                        {(kbResults[kb.id] || []).length > 0 && (
                           <div className="space-y-2">
-                            {kbResults.map((r, idx) => (
+                            {(kbResults[kb.id] || []).map((r, idx) => (
                               <div key={idx} className="border rounded p-2">
                                 <div className="text-sm text-slate-600">Distance: {r.distance ?? "n/a"}</div>
                                 <div>{r.content}</div>

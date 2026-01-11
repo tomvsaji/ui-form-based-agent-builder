@@ -26,6 +26,12 @@ def _ensure_defaults(state: AgentState) -> AgentState:
     return state
 
 
+def _trace_node_event(state: AgentState, node: str, phase: str, payload: Dict[str, object]) -> None:
+    state.setdefault("trace_events", []).append(
+        {"node": node, "phase": phase, "ts": time.time(), **payload}
+    )
+
+
 def _validate_field(
     field: FieldDefinition,
     raw_value: Optional[str],
@@ -107,28 +113,61 @@ def build_graph(
 
     def ingest_message(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
-        state["trace_events"].append(
-            {
-                "node": "ingest_message",
-                "ts": time.time(),
-                "input": {"last_user_message": state.get("last_user_message")},
-            }
+        _trace_node_event(
+            state,
+            "ingest_message",
+            "start",
+            {"input": {"last_user_message": state.get("last_user_message")}},
         )
         if state.get("last_user_message"):
             state["messages"].append({"role": "user", "content": state["last_user_message"]})
+        _trace_node_event(
+            state,
+            "ingest_message",
+            "end",
+            {"output": {"messages_count": len(state.get("messages", []))}},
+        )
         return state
 
     def intent_router(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
-        state["trace_events"].append(
-            {"node": "intent_router", "ts": time.time(), "input": {"message": state.get("last_user_message")}}
+        _trace_node_event(
+            state,
+            "intent_router",
+            "start",
+            {"input": {"message": state.get("last_user_message")}},
         )
+        if state.get("current_form_id") and state.get("completed") and not state.get("awaiting_field"):
+            state["current_form_id"] = None
+            state["current_intent"] = None
+            state["current_step_index"] = 0
+            state["form_values"] = {}
+            state["awaiting_field"] = False
+            state["completed"] = False
+            _trace_node_event(
+                state,
+                "intent_router",
+                "event",
+                {"event": "form_reset_after_completion"},
+            )
         if state.get("current_form_id"):
+            _trace_node_event(
+                state,
+                "intent_router",
+                "end",
+                {"output": {"current_form_id": state.get("current_form_id"), "skipped": True}},
+            )
             return state
 
         last_message = state.get("last_user_message") or ""
         if not forms_config.intents:
             state["reply"] = "No intents configured."
+            _trace_node_event(
+                state,
+                "intent_router",
+                "end",
+                {"output": {"reply": state.get("reply"), "error": "no_intents"}},
+            )
             return state
 
         try:
@@ -137,14 +176,31 @@ def build_graph(
                 [{"id": i.id, "name": i.name, "description": i.description} for i in forms_config.intents],
             )
             chosen_intent = next((i for i in forms_config.intents if i.id == intent_id), None)
-            state["trace_events"].append({"stage": "intent_router", "llm": meta})
+            _trace_node_event(
+                state,
+                "intent_router",
+                "event",
+                {"event": "llm_call", "llm": meta},
+            )
             state["llm_usage"] = meta.get("usage", {})
         except Exception as exc:
             state["reply"] = f"LLM intent routing failed: {exc}"
+            _trace_node_event(
+                state,
+                "intent_router",
+                "end",
+                {"output": {"reply": state.get("reply"), "error": "llm_failed"}},
+            )
             return state
 
         if not chosen_intent:
             state["general_query"] = True
+            _trace_node_event(
+                state,
+                "intent_router",
+                "end",
+                {"output": {"general_query": True}},
+            )
             return state
 
         if chosen_intent:
@@ -153,27 +209,52 @@ def build_graph(
             state["current_step_index"] = 0
             state["form_values"] = {}
             state["awaiting_field"] = False
-            state["trace_events"].append(
+            _trace_node_event(
+                state,
+                "intent_router",
+                "end",
                 {
-                    "node": "intent_router",
-                    "ts": time.time(),
                     "output": {
                         "current_intent": chosen_intent.id,
                         "current_form_id": chosen_intent.target_form,
-                    },
-                }
+                    }
+                },
             )
         return state
 
     def general_responder(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
+        _trace_node_event(
+            state,
+            "general_responder",
+            "start",
+            {"input": {"message": state.get("last_user_message")}},
+        )
         if state.get("current_form_id") or state.get("reply"):
+            _trace_node_event(
+                state,
+                "general_responder",
+                "end",
+                {"output": {"skipped": True}},
+            )
             return state
         if not state.get("general_query"):
+            _trace_node_event(
+                state,
+                "general_responder",
+                "end",
+                {"output": {"skipped": True, "reason": "not_general_query"}},
+            )
             return state
         message = (state.get("last_user_message") or "").strip()
         if not message:
             state["reply"] = "Hi! How can I help today?"
+            _trace_node_event(
+                state,
+                "general_responder",
+                "end",
+                {"output": {"reply": state.get("reply")}},
+            )
             return state
 
         if knowledge_config and knowledge_config.enable_knowledge_base and knowledge_config.provider == "pgvector":
@@ -187,8 +268,11 @@ def build_graph(
                     embedding = embed_text(message)
                     results = search_kb_documents(get_tenant_id(), kb_id, embedding, limit=4)
                 except Exception as exc:
-                    state["trace_events"].append(
-                        {"node": "general_responder", "error": f"KB search failed: {exc}"}
+                    _trace_node_event(
+                        state,
+                        "general_responder",
+                        "event",
+                        {"event": "kb_search_failed", "error": f"KB search failed: {exc}"},
                     )
                     results = []
                 if results:
@@ -197,51 +281,98 @@ def build_graph(
                         answer, meta = answer_with_context(message, context)
                         if answer:
                             state["reply"] = answer
-                            state["trace_events"].append(
-                                {
-                                    "node": "general_responder",
-                                    "kb_id": kb_id,
-                                    "results": results,
-                                    "llm": meta,
-                                }
+                            _trace_node_event(
+                                state,
+                                "general_responder",
+                                "event",
+                                {"event": "kb_answer", "kb_id": kb_id, "results": results, "llm": meta},
+                            )
+                            _trace_node_event(
+                                state,
+                                "general_responder",
+                                "end",
+                                {"output": {"reply": state.get("reply"), "kb_id": kb_id}},
                             )
                             return state
                     except Exception as exc:
-                        state["trace_events"].append(
-                            {"node": "general_responder", "error": f"LLM answer failed: {exc}"}
+                        _trace_node_event(
+                            state,
+                            "general_responder",
+                            "event",
+                            {"event": "llm_answer_failed", "error": f"LLM answer failed: {exc}"},
                         )
+                    top_hit = results[0].get("content") if results else ""
+                    fallback = (top_hit or "").strip()
+                    if fallback:
+                        fallback = fallback[:800]
+                        state["reply"] = f"I found this in the knowledge base:\n\n{fallback}"
+                    else:
+                        state["reply"] = "I found relevant information in the knowledge base, but couldn't summarize it."
+                    _trace_node_event(
+                        state,
+                        "general_responder",
+                        "event",
+                        {"event": "kb_fallback", "kb_id": kb_id, "results": results},
+                    )
+                    _trace_node_event(
+                        state,
+                        "general_responder",
+                        "end",
+                        {"output": {"reply": state.get("reply"), "kb_id": kb_id}},
+                    )
+                    return state
 
         intent_names = ", ".join([i.name for i in forms_config.intents])
         state["reply"] = f"Hi! What would you like to do? I can help with: {intent_names}."
+        _trace_node_event(
+            state,
+            "general_responder",
+            "end",
+            {"output": {"reply": state.get("reply")}},
+        )
         return state
 
     def form_orchestrator(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
-        if state.get("reply") and not state.get("current_form_id"):
-            return state
-        state["trace_events"].append(
+        def log_end(payload: Dict[str, object]) -> None:
+            _trace_node_event(state, "form_orchestrator", "end", {"output": payload})
+
+        _trace_node_event(
+            state,
+            "form_orchestrator",
+            "start",
             {
-                "node": "form_orchestrator",
-                "ts": time.time(),
                 "input": {
                     "current_form_id": state.get("current_form_id"),
                     "current_step_index": state.get("current_step_index"),
                     "awaiting_field": state.get("awaiting_field"),
                     "last_user_message": state.get("last_user_message"),
-                },
-            }
+                }
+            },
         )
+        if state.get("reply"):
+            log_end(
+                {
+                    "skipped": True,
+                    "reason": "reply_already_set",
+                    "current_form_id": state.get("current_form_id"),
+                }
+            )
+            return state
         if not state.get("current_form_id"):
             state["reply"] = "I was not able to route to a form."
+            log_end({"reply": state.get("reply"), "error": "missing_form"})
             return state
 
         form = forms_config.form_by_id(state["current_form_id"])
         if not form:
             state["reply"] = f"Configured form '{state['current_form_id']}' was not found."
+            log_end({"reply": state.get("reply"), "error": "form_not_found"})
             return state
 
         if state.get("completed"):
-            state["reply"] = "Form already completed. Say 'restart' to begin again."
+            state["reply"] = "Form already completed. Start a new request if needed."
+            log_end({"reply": state.get("reply"), "completed": True})
             return state
 
         # Step-by-step flow
@@ -250,12 +381,14 @@ def build_graph(
             if idx >= len(form.field_order):
                 state["completed"] = True
                 state["reply"] = _summarize_form(state, form.id, forms_config)
+                log_end({"reply": state.get("reply"), "completed": True, "form_values": state.get("form_values")})
                 return state
 
             field_name = form.field_order[idx]
             field = form.field_by_name(field_name)
             if not field:
                 state["reply"] = f"Unknown field '{field_name}'."
+                log_end({"reply": state.get("reply"), "error": "field_not_found"})
                 return state
 
             if state.get("awaiting_field"):
@@ -263,6 +396,7 @@ def build_graph(
                 ok, error_msg, parsed_value = _validate_field(field, state.get("last_user_message"), options)
                 if not ok:
                     state["reply"] = f"{error_msg} Please provide {field.label}."
+                    log_end({"reply": state.get("reply"), "error": "validation_failed"})
                     return state
                 state["form_values"][field_name] = parsed_value
                 state["current_step_index"] = idx + 1
@@ -270,22 +404,14 @@ def build_graph(
                 if state["current_step_index"] >= len(form.field_order):
                     state["completed"] = True
                     state["reply"] = _summarize_form(state, form.id, forms_config)
+                    log_end({"reply": state.get("reply"), "completed": True, "form_values": state.get("form_values")})
                     return state
 
             next_field_name = form.field_order[state["current_step_index"]]
             next_field = form.field_by_name(next_field_name)
             state["awaiting_field"] = True
             state["reply"] = f"Please provide {next_field.label} ({next_field.type})."
-            state["trace_events"].append(
-                {
-                    "node": "form_orchestrator",
-                    "ts": time.time(),
-                    "output": {
-                        "reply": state["reply"],
-                        "next_field": next_field.name,
-                    },
-                }
-            )
+            log_end({"reply": state.get("reply"), "next_field": next_field.name})
             return state
 
         # One-shot flow
@@ -293,13 +419,7 @@ def build_graph(
             requested = ", ".join([f"{f.label} ({f.type})" for f in form.fields])
             state["awaiting_field"] = True
             state["reply"] = f"Share all details in one message: {requested}."
-            state["trace_events"].append(
-                {
-                    "node": "form_orchestrator",
-                    "ts": time.time(),
-                    "output": {"reply": state["reply"]},
-                }
-            )
+            log_end({"reply": state.get("reply"), "mode": "one-shot"})
             return state
 
         # Attempt very light extraction for one-shot inputs
@@ -318,7 +438,12 @@ def build_graph(
                         for f in form.fields
                     ],
                 )
-                state["trace_events"].append({"stage": "field_extraction", "llm": meta})
+                _trace_node_event(
+                    state,
+                    "form_orchestrator",
+                    "event",
+                    {"event": "field_extraction", "llm": meta},
+                )
                 state["llm_usage"] = meta.get("usage", {})
                 for field in form.fields:
                     raw_value = extracted.get(field.name)
@@ -357,22 +482,22 @@ def build_graph(
         missing = [f.label for f in form.fields if f.required and f.name not in state["form_values"]]
         if missing:
             state["reply"] = f"Missing fields: {', '.join(missing)}. Please provide them."
+            log_end({"reply": state.get("reply"), "missing_fields": missing})
             return state
 
         state["completed"] = True
         state["reply"] = _summarize_form(state, form.id, forms_config)
-        state["trace_events"].append(
-            {
-                "node": "form_orchestrator",
-                "ts": time.time(),
-                "output": {"completed": True, "reply": state["reply"], "form_values": state.get("form_values")},
-            }
-        )
+        log_end({"reply": state.get("reply"), "completed": True, "form_values": state.get("form_values")})
         return state
 
     def response_node(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
-        state["trace_events"].append({"node": "response_node", "ts": time.time(), "input": {"reply": state.get("reply")}})
+        _trace_node_event(
+            state,
+            "response_node",
+            "start",
+            {"input": {"reply": state.get("reply")}},
+        )
         reply = state.get("reply")
         if not reply and state.get("current_form_id") and state.get("awaiting_field"):
             form = forms_config.form_by_id(state["current_form_id"])
@@ -386,7 +511,12 @@ def build_graph(
         reply = reply or "Acknowledged."
         state["reply"] = reply
         state["messages"].append({"role": "assistant", "content": reply})
-        state["trace_events"].append({"node": "response_node", "ts": time.time(), "output": {"reply": reply}})
+        _trace_node_event(
+            state,
+            "response_node",
+            "end",
+            {"output": {"reply": reply}},
+        )
         return state
 
     workflow.add_node("ingest_message", ingest_message)
