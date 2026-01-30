@@ -130,6 +130,7 @@
       "id": "support_form",
       "name": "Support Ticket",
       "description": "Capture support issues in one message.",
+      "submission_url": "https://api.example.com/support/submit",
       "mode": "one-shot",
       "field_order": [
         "category",
@@ -182,6 +183,7 @@
       "id": "form_1765382298710",
       "name": "Book Airline",
       "description": "Get travel details to book tickets for the user.",
+      "submission_url": "https://api.example.com/booking/submit",
       "mode": "step-by-step",
       "field_order": [
         "field_1765382369925",
@@ -207,8 +209,7 @@
           "type": "date",
           "required": false
         }
-      ],
-      "submission_url": ""
+      ]
     }
   ]
 }

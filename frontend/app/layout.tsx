@@ -3,7 +3,7 @@ import { ReactNode } from "react";
 
 export const metadata = {
   title: "Agent Builder",
-  description: "Authoring UI for intents, forms, tools, and deployment settings",
+  description: "Authoring UI for intents, forms, knowledge, and deployment settings",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

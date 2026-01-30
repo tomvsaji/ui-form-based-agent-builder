@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, or_, select
 
 from .db import session_scope
 from .db_models import (
@@ -287,6 +287,58 @@ def list_kb_files(tenant_id: str, kb_id: int) -> List[Dict[str, Any]]:
             if created_at and (entry["last_indexed_at"] is None or created_at > entry["last_indexed_at"]):
                 entry["last_indexed_at"] = created_at
         return sorted(files.values(), key=lambda item: item["last_indexed_at"] or "", reverse=True)
+
+
+def _kb_filename_clause(filename: str):
+    if filename == "manual_entry":
+        return or_(
+            KnowledgeDocument.doc_metadata.is_(None),
+            KnowledgeDocument.doc_metadata["filename"].astext.is_(None),
+        )
+    return KnowledgeDocument.doc_metadata["filename"].astext == filename
+
+
+def delete_kb_file(tenant_id: str, kb_id: int, filename: str) -> int:
+    with session_scope() as session:
+        result = session.execute(
+            delete(KnowledgeDocument).where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.kb_id == kb_id,
+                _kb_filename_clause(filename),
+            )
+        )
+        return result.rowcount or 0
+
+
+def list_kb_file_chunks(tenant_id: str, kb_id: int, filename: str, limit: int = 50) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = (
+            select(
+                KnowledgeDocument.id,
+                KnowledgeDocument.content,
+                KnowledgeDocument.doc_metadata,
+                KnowledgeDocument.created_at,
+            )
+            .where(
+                KnowledgeDocument.tenant_id == tenant_id,
+                KnowledgeDocument.kb_id == kb_id,
+                _kb_filename_clause(filename),
+            )
+            .order_by(KnowledgeDocument.id.asc())
+            .limit(limit)
+        )
+        results = []
+        for row in session.execute(stmt):
+            metadata = row.doc_metadata or {}
+            results.append(
+                {
+                    "id": row.id,
+                    "content": row.content,
+                    "chunk_index": metadata.get("chunk_index"),
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                }
+            )
+        return results
 
 
 def add_kb_document(

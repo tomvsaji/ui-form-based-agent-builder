@@ -22,6 +22,10 @@ from .storage import (
     create_knowledge_base,
     add_kb_document,
     search_kb_documents,
+    delete_knowledge_base,
+    delete_kb_file,
+    list_kb_files,
+    list_kb_file_chunks,
 )
 from .cache import build_cache_key, cache_get, cache_set, get_redis
 from .embeddings import embed_text
@@ -167,6 +171,32 @@ def create_kb(payload: Dict):
     provider = payload.get("provider", "pgvector")
     kb_id = create_knowledge_base(tenant_id, name, description, provider)
     return {"id": kb_id}
+
+
+@app.delete("/knowledge-bases/{kb_id}")
+def delete_kb(kb_id: int):
+    tenant_id = get_tenant_id()
+    delete_knowledge_base(tenant_id, kb_id)
+    return {"status": "ok"}
+
+
+@app.get("/knowledge-bases/{kb_id}/files")
+def list_kb_files_endpoint(kb_id: int):
+    tenant_id = get_tenant_id()
+    return {"files": list_kb_files(tenant_id, kb_id)}
+
+
+@app.get("/knowledge-bases/{kb_id}/files/chunks")
+def list_kb_file_chunks_endpoint(kb_id: int, filename: str, limit: int = 50):
+    tenant_id = get_tenant_id()
+    return {"chunks": list_kb_file_chunks(tenant_id, kb_id, filename, limit=limit)}
+
+
+@app.delete("/knowledge-bases/{kb_id}/files")
+def delete_kb_file_endpoint(kb_id: int, filename: str):
+    tenant_id = get_tenant_id()
+    deleted = delete_kb_file(tenant_id, kb_id, filename)
+    return {"deleted": deleted}
 
 
 @app.post("/knowledge-bases/{kb_id}/documents")

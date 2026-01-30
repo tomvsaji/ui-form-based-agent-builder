@@ -138,7 +138,7 @@ class FormDefinition(BaseModel):
     name: str
     title: Optional[str] = None
     description: str
-    submission_url: Optional[HttpUrl] = None
+    submission_url: HttpUrl
     mode: Literal["step-by-step", "one-shot"] = "step-by-step"
     field_order: List[str]
     fields: List[FieldDefinition]
@@ -149,13 +149,6 @@ class FormDefinition(BaseModel):
 
     def field_by_name(self, name: str) -> Optional[FieldDefinition]:
         return next((f for f in self.fields if f.name == name), None)
-
-    @field_validator("submission_url", mode="before")
-    @classmethod
-    def _empty_submission_url(cls, value):
-        if value == "":
-            return None
-        return value
 
 
 class IntentDefinition(BaseModel):

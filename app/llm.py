@@ -90,3 +90,61 @@ def extract_fields(message: str, fields: List[Dict[str, Any]]) -> Tuple[Dict[str
     data = json.loads(content)
     usage = response.usage.model_dump() if response.usage else {}
     return data, {"usage": usage}
+
+
+def generate_field_prompt(form: Dict[str, Any], field: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    client = _client()
+    prompt = (
+        "Write a single, friendly question to collect one form field. "
+        "Use the field label, avoid internal IDs. "
+        "If boolean, ask yes/no. If dropdown/enum, mention options briefly. "
+        "Keep it concise (under ~18 words), end with a question mark."
+    )
+    response = client.chat.completions.create(
+        model=_model(),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps({"form": form, "field": field})},
+        ],
+    )
+    content = (response.choices[0].message.content or "").strip()
+    if content and not content.endswith("?"):
+        content = f"{content}?"
+    usage = response.usage.model_dump() if response.usage else {}
+    return content, {"usage": usage}
+
+
+def explain_validation_error(payload: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    client = _client()
+    prompt = (
+        "Explain the validation failure in one short, human-friendly sentence. "
+        "Be specific and suggest how to fix it. Avoid jargon."
+    )
+    response = client.chat.completions.create(
+        model=_model(),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload)},
+        ],
+    )
+    content = (response.choices[0].message.content or "").strip()
+    usage = response.usage.model_dump() if response.usage else {}
+    return content, {"usage": usage}
+
+
+def explain_validator_failure(payload: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    client = _client()
+    prompt = (
+        "Explain why the business rule failed in one concise sentence, "
+        "using the user's provided values. Suggest what to change."
+    )
+    response = client.chat.completions.create(
+        model=_model(),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload)},
+        ],
+    )
+    content = (response.choices[0].message.content or "").strip()
+    usage = response.usage.model_dump() if response.usage else {}
+    return content, {"usage": usage}
