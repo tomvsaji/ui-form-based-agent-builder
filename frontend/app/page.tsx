@@ -5,21 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 type Intent = { id: string; name: string; description: string; target_form: string };
-type ToolCallConfig = {
-  tool_name: string;
-  input_map?: Record<string, string>;
-  output_map?: Record<string, string>;
-  output_path?: string | null;
-};
 type Field = {
   name: string;
   label: string;
   type: "text" | "number" | "date" | "boolean" | "dropdown" | "enum" | "file";
   required?: boolean;
   dropdown_options?: string[];
-  dropdown_tool?: string | null;
-  dropdown_tool_config?: ToolCallConfig | null;
-  tool_hook?: ToolCallConfig | null;
   pattern?: string;
   min_length?: number | null;
   max_length?: number | null;
@@ -39,7 +30,7 @@ type Form = {
   name: string;
   title?: string | null;
   description: string;
-  submission_url?: string | null;
+  submission_url: string;
   submission?: {
     type: "api" | "tool";
     tool_name?: string | null;
@@ -60,20 +51,6 @@ type Form = {
   }>;
   version?: number;
 };
-type Tool = {
-  name: string;
-  description: string;
-  http_method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  url: string;
-  headers?: Record<string, string>;
-  query_schema?: Record<string, unknown>;
-  body_schema?: Record<string, unknown>;
-  auth: "none" | "api_key" | "bearer" | "managed_identity";
-  role: "pre-submit-validator" | "data-enricher" | "submit-form";
-  cache_enabled?: boolean;
-  cache_ttl_seconds?: number | null;
-};
-
 type ProjectConfig = {
   project_name: string;
   system_message: string;
@@ -100,11 +77,13 @@ type KnowledgeBaseConfig = {
 };
 
 type FormsConfig = { intents: Intent[]; forms: Form[] };
-type ToolsConfig = { tools: Tool[] };
 type ThreadSummary = { thread_id: string; last_activity?: string | null };
 type ThreadMessage = { role: string; content: string; created_at?: string | null };
 type TraceLog = { trace_id: string; thread_id: string; version: number; data: Record<string, unknown>; created_at?: string | null };
 type KnowledgeBase = { id: number; name: string; description: string; provider: string; created_at?: string | null };
+type KnowledgeBaseFile = { filename: string; chunks: number; last_indexed_at?: string | null };
+type KnowledgeBaseChunk = { id: number; content: string; chunk_index?: number | null; created_at?: string | null };
+type PublishedVersion = { version: number; created_at?: string | null };
 type PersistenceConfig = {
   storage_backend?: "none" | "postgres" | "mongo" | "cosmos";
   postgres_dsn?: string | null;
@@ -128,7 +107,6 @@ type LoggingConfig = { emit_trace_logs: boolean; mode: "console" | "file" | "app
 export default function Home() {
   const [project, setProject] = useState<ProjectConfig | null>(null);
   const [formsCfg, setFormsCfg] = useState<FormsConfig | null>(null);
-  const [toolsCfg, setToolsCfg] = useState<ToolsConfig | null>(null);
   const [persistence, setPersistence] = useState<PersistenceConfig | null>(null);
   const [loggingCfg, setLoggingCfg] = useState<LoggingConfig | null>(null);
   const [knowledgeCfg, setKnowledgeCfg] = useState<KnowledgeBaseConfig | null>(null);
@@ -137,59 +115,43 @@ export default function Home() {
   const [loading, setLoading] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"configure" | "test" | "threads" | "traces" | "knowledge">("configure");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [threadSearch, setThreadSearch] = useState<string>("");
   const [selectedThreadId, setSelectedThreadId] = useState<string>("");
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [traces, setTraces] = useState<TraceLog[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [kbName, setKbName] = useState<string>("");
   const [kbDescription, setKbDescription] = useState<string>("");
-  const [kbProvider, setKbProvider] = useState<"pgvector" | "azure_ai_search">("pgvector");
+  const [kbProvider, setKbProvider] = useState<"pgvector">("pgvector");
   const [kbDocContent, setKbDocContent] = useState<Record<number, string>>({});
   const [kbQuery, setKbQuery] = useState<Record<number, string>>({});
   const [kbResults, setKbResults] = useState<Record<number, { content: string; distance: number | null }[]>>({});
   const [kbFile, setKbFile] = useState<Record<number, File | null>>({});
   const [uploadingKbId, setUploadingKbId] = useState<number | null>(null);
-  const [fieldDrafts, setFieldDrafts] = useState<Record<string, string>>({});
+  const [kbFiles, setKbFiles] = useState<Record<number, KnowledgeBaseFile[]>>({});
+  const [kbFileChunks, setKbFileChunks] = useState<Record<number, Record<string, KnowledgeBaseChunk[]>>>({});
+  const [publishedVersions, setPublishedVersions] = useState<PublishedVersion[]>([]);
+  const [versionConfigs, setVersionConfigs] = useState<Record<number, Record<string, unknown> | null>>({});
+  const [loadingVersions, setLoadingVersions] = useState<boolean>(false);
+  const [loadingVersionId, setLoadingVersionId] = useState<number | null>(null);
 
   const selectedForm = useMemo(
     () => formsCfg?.forms.find((f) => f.id === selectedFormId) || null,
     [formsCfg, selectedFormId]
   );
 
-  const updateFieldDraft = (key: string, value: string) => {
-    setFieldDrafts((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const getFieldDraft = (key: string, fallback: string) => {
-    return fieldDrafts[key] ?? fallback;
-  };
-
-  const parseJsonMap = (raw: string) => {
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("JSON must be an object.");
-      }
-      return parsed as Record<string, string>;
-    } catch (err) {
-      setMessage(`Invalid JSON map: ${String(err)}`);
-      return null;
-    }
-  };
-
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [p, f, t, s, l, k] = await Promise.all(
-        ["project", "forms", "tools", "persistence", "logging", "knowledge"].map((name) =>
+      const [p, f, s, l, k] = await Promise.all(
+        ["project", "forms", "persistence", "logging", "knowledge"].map((name) =>
           fetch(`${API_BASE}/config/${name}`).then((r) => r.json())
         )
       );
       setProject(p);
       setFormsCfg(f);
-      setToolsCfg(t);
       setPersistence(s);
-      setLoggingCfg(l);
+      setLoggingCfg(l ? { ...l, emit_trace_logs: true } : l);
       setKnowledgeCfg(k);
       setSelectedFormId(f.forms?.[0]?.id || null);
       setMessage("Loaded configs.");
@@ -209,6 +171,12 @@ export default function Home() {
       void loadKnowledgeBases();
     }
   }, [knowledgeCfg?.provider]);
+
+  useEffect(() => {
+    if (activeTab === "configure") {
+      void loadPublishedVersions();
+    }
+  }, [activeTab]);
 
   const loadThreads = async () => {
     try {
@@ -248,6 +216,34 @@ export default function Home() {
     }
   };
 
+  const loadPublishedVersions = async () => {
+    setLoadingVersions(true);
+    try {
+      const res = await fetch(`${API_BASE}/versions`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setPublishedVersions(data.versions || []);
+    } catch (err) {
+      setMessage(`Failed to load versions: ${String(err)}`);
+    } finally {
+      setLoadingVersions(false);
+    }
+  };
+
+  const loadPublishedVersionConfig = async (version: number) => {
+    setLoadingVersionId(version);
+    try {
+      const res = await fetch(`${API_BASE}/versions/${version}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setVersionConfigs((prev) => ({ ...prev, [version]: data }));
+    } catch (err) {
+      setMessage(`Failed to load version ${version}: ${String(err)}`);
+    } finally {
+      setLoadingVersionId(null);
+    }
+  };
+
   const loadKnowledgeBases = async () => {
     try {
       const res = await fetch(`${API_BASE}/knowledge-bases`);
@@ -256,6 +252,33 @@ export default function Home() {
       setKnowledgeBases(data.items || []);
     } catch (err) {
       setMessage(`Failed to load knowledge bases: ${String(err)}`);
+    }
+  };
+
+  const loadKnowledgeBaseFiles = async (kbId: number) => {
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}/files`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setKbFiles((prev) => ({ ...prev, [kbId]: data.files || [] }));
+    } catch (err) {
+      setMessage(`Failed to load KB files: ${String(err)}`);
+    }
+  };
+
+  const loadKnowledgeBaseFileChunks = async (kbId: number, filename: string) => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/knowledge-bases/${kbId}/files/chunks?filename=${encodeURIComponent(filename)}`
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setKbFileChunks((prev) => ({
+        ...prev,
+        [kbId]: { ...(prev[kbId] || {}), [filename]: data.chunks || [] },
+      }));
+    } catch (err) {
+      setMessage(`Failed to load file chunks: ${String(err)}`);
     }
   };
 
@@ -294,6 +317,7 @@ export default function Home() {
       });
       if (!res.ok) throw new Error(await res.text());
       setKbDocContent((prev) => ({ ...prev, [kbId]: "" }));
+      void loadKnowledgeBaseFiles(kbId);
       setMessage("Document indexed.");
     } catch (err) {
       setMessage(`Indexing failed: ${String(err)}`);
@@ -317,6 +341,7 @@ export default function Home() {
       });
       if (!res.ok) throw new Error(await res.text());
       setKbFile((prev) => ({ ...prev, [kbId]: null }));
+      void loadKnowledgeBaseFiles(kbId);
       setMessage("File indexed.");
     } catch (err) {
       setMessage(`Upload failed: ${String(err)}`);
@@ -342,6 +367,50 @@ export default function Home() {
     }
   };
 
+  const deleteKnowledgeBase = async (kbId: number) => {
+    if (!window.confirm("Delete this knowledge base and all its documents?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/knowledge-bases/${kbId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      setKbFiles((prev) => {
+        const next = { ...prev };
+        delete next[kbId];
+        return next;
+      });
+      if (knowledgeCfg?.knowledge_base_id === kbId) {
+        setKnowledgeCfg({ ...knowledgeCfg, knowledge_base_id: null });
+      }
+      await loadKnowledgeBases();
+      setMessage("Knowledge base deleted.");
+    } catch (err) {
+      setMessage(`Delete failed: ${String(err)}`);
+    }
+  };
+
+  const deleteKnowledgeBaseFile = async (kbId: number, filename: string) => {
+    if (!window.confirm(`Delete all chunks for ${filename}?`)) return;
+    try {
+      const res = await fetch(
+        `${API_BASE}/knowledge-bases/${kbId}/files?filename=${encodeURIComponent(filename)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      setKbFileChunks((prev) => {
+        const next = { ...prev };
+        if (next[kbId]) {
+          const byFile = { ...next[kbId] };
+          delete byFile[filename];
+          next[kbId] = byFile;
+        }
+        return next;
+      });
+      void loadKnowledgeBaseFiles(kbId);
+      setMessage("File chunks deleted.");
+    } catch (err) {
+      setMessage(`Delete file failed: ${String(err)}`);
+    }
+  };
+
   const saveConfig = async (name: string, data: unknown) => {
     const res = await fetch(`${API_BASE}/config/${name}`, {
       method: "PUT",
@@ -353,12 +422,28 @@ export default function Home() {
 
   const saveAll = async () => {
     try {
+      const missingWebhook = formsCfg?.forms.find((form) => !form.submission_url?.trim());
+      if (missingWebhook) {
+        setMessage(`Submission webhook URL required for form: ${missingWebhook.name}`);
+        return;
+      }
+      const invalidWebhook = formsCfg?.forms.find((form) => {
+        try {
+          new URL(form.submission_url);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      if (invalidWebhook) {
+        setMessage(`Submission webhook URL must be a valid URL for form: ${invalidWebhook.name}`);
+        return;
+      }
       setLoading(true);
       await saveConfig("project", project);
       await saveConfig("forms", formsCfg);
-      await saveConfig("tools", toolsCfg);
       await saveConfig("persistence", persistence);
-      await saveConfig("logging", loggingCfg);
+      await saveConfig("logging", loggingCfg ? { ...loggingCfg, emit_trace_logs: true } : loggingCfg);
       await saveConfig("knowledge", knowledgeCfg);
       setMessage("Saved all configs.");
     } catch (err) {
@@ -503,33 +588,53 @@ export default function Home() {
     setFormsCfg({ ...formsCfg, intents: formsCfg.intents.filter((i) => i.id !== id) });
   };
 
-  const updateTool = (name: string, updates: Partial<Tool>) => {
-    if (!toolsCfg) return;
-    const updated = toolsCfg.tools.map((t) => (t.name === name ? { ...t, ...updates } : t));
-    setToolsCfg({ ...toolsCfg, tools: updated });
+  const formatEventTime = (ts?: number) => {
+    if (!ts) return "";
+    return new Date(ts * 1000).toLocaleTimeString();
   };
 
-  const addTool = () => {
-    if (!toolsCfg) return;
-    const newTool: Tool = {
-      name: `tool_${Date.now()}`,
-      description: "",
-      http_method: "GET",
-      url: "https://api.example.com",
-      auth: "none",
-      role: "data-enricher",
-      headers: {},
-      query_schema: {},
-      body_schema: {},
-      cache_enabled: false,
-      cache_ttl_seconds: null,
-    };
-    setToolsCfg({ ...toolsCfg, tools: [...toolsCfg.tools, newTool] });
-  };
-
-  const deleteTool = (name: string) => {
-    if (!toolsCfg) return;
-    setToolsCfg({ ...toolsCfg, tools: toolsCfg.tools.filter((t) => t.name !== name) });
+  const renderEventDetail = (evt: any, idx: number) => {
+    const title = evt?.node || evt?.event || `event_${idx + 1}`;
+    const phase = evt?.phase ? ` · ${evt.phase}` : "";
+    const timestamp = formatEventTime(evt?.ts);
+    const input = evt?.input;
+    const output = evt?.output;
+    const llm = evt?.llm;
+    const error = evt?.error;
+    return (
+      <details key={`evt-${idx}`} className="border rounded p-2">
+        <summary className="cursor-pointer text-sm font-medium">
+          {title}
+          {phase}
+          {timestamp ? ` · ${timestamp}` : ""}
+        </summary>
+        <div className="space-y-2" style={{ marginTop: 8 }}>
+          {error && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#fef2f2", borderColor: "#fecaca" }}>
+              <strong>Error:</strong> {String(error)}
+            </div>
+          )}
+          {input !== undefined && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+              <div className="text-slate-600">Input</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(input, null, 2)}</pre>
+            </div>
+          )}
+          {output !== undefined && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+              <div className="text-slate-600">Output</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(output, null, 2)}</pre>
+            </div>
+          )}
+          {llm && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f0fdf4", borderColor: "#bbf7d0" }}>
+              <div className="text-slate-600">LLM</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(llm, null, 2)}</pre>
+            </div>
+          )}
+        </div>
+      </details>
+    );
   };
 
   return (
@@ -538,7 +643,7 @@ export default function Home() {
         <div>
           <h1 style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>Agent Builder UI</h1>
           <p style={{ color: "#475569", margin: "4px 0" }}>
-            Structured editor for project, intents, forms, tools, persistence, logging. API: {API_BASE}
+            Structured editor for project, intents, forms, knowledge, logging. API: {API_BASE}
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -583,6 +688,7 @@ export default function Home() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, marginBottom: 16 }}>
         <div className="card" style={{ minHeight: 240 }}>
           <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Project</h2>
+          <p className="text-sm text-slate-600">Define the bot’s identity, base URL, and deployment metadata.</p>
           {project && (
             <div className="space-y-2">
               <input
@@ -656,6 +762,7 @@ export default function Home() {
               + Add intent
             </button>
           </div>
+          <p className="text-sm text-slate-600">Route user requests to a form by matching on intent.</p>
           <div className="space-y-3">
             {formsCfg?.intents.map((intent) => (
               <div key={intent.id} className="border p-3 rounded">
@@ -706,6 +813,7 @@ export default function Home() {
             )}
           </div>
         </div>
+        <p className="text-sm text-slate-600">Define fields and the webhook URL used to submit captured data.</p>
         {formsCfg && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -750,8 +858,10 @@ export default function Home() {
                   <input
                     value={selectedForm.submission_url || ""}
                     onChange={(e) => upsertForm({ submission_url: e.target.value })}
-                    placeholder="Submission URL (optional)"
+                    placeholder="Submission webhook URL"
+                    required
                   />
+                  <div className="text-sm text-slate-600">Required. Runtime calls this URL when the form is completed.</div>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <h3 style={{ fontWeight: 600, margin: 0 }}>Fields (drag via arrows)</h3>
@@ -763,9 +873,6 @@ export default function Home() {
                   {selectedForm.field_order.map((fname) => {
                     const field = selectedForm.fields.find((f) => f.name === fname);
                     if (!field) return null;
-                    const dropdownToolKey = `${selectedForm.id}:${fname}:dropdown_input`;
-                    const hookInputKey = `${selectedForm.id}:${fname}:hook_input`;
-                    const hookOutputKey = `${selectedForm.id}:${fname}:hook_output`;
                     return (
                       <div key={fname} className="border rounded p-3 space-y-2">
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -820,133 +927,8 @@ export default function Home() {
                               }
                               placeholder="Static options (comma separated)"
                             />
-                            <select
-                              value={field.dropdown_tool_config?.tool_name || field.dropdown_tool || ""}
-                              onChange={(e) => {
-                                const toolName = e.target.value || null;
-                                updateFormField(fname, {
-                                  dropdown_tool: toolName,
-                                  dropdown_tool_config: toolName
-                                    ? {
-                                        tool_name: toolName,
-                                        input_map: field.dropdown_tool_config?.input_map || {},
-                                        output_path: field.dropdown_tool_config?.output_path || null,
-                                      }
-                                    : null,
-                                });
-                              }}
-                            >
-                              <option value="">Dropdown from tool (optional)</option>
-                              {toolsCfg?.tools.map((t) => (
-                                <option key={t.name} value={t.name}>
-                                  {t.name}
-                                </option>
-                              ))}
-                            </select>
                           </div>
                         )}
-                        {(field.type === "dropdown" || field.type === "enum") && field.dropdown_tool_config?.tool_name && (
-                          <div className="border rounded p-2 space-y-2">
-                            <div className="text-sm font-medium">Dropdown tool mapping</div>
-                            <textarea
-                              value={getFieldDraft(
-                                dropdownToolKey,
-                                JSON.stringify(field.dropdown_tool_config?.input_map || {}, null, 2)
-                              )}
-                              onChange={(e) => updateFieldDraft(dropdownToolKey, e.target.value)}
-                              onBlur={(e) => {
-                                const parsed = parseJsonMap(e.target.value);
-                                if (!parsed) return;
-                                updateFormField(fname, {
-                                  dropdown_tool_config: {
-                                    ...(field.dropdown_tool_config || { tool_name: "" }),
-                                    input_map: parsed,
-                                  },
-                                });
-                              }}
-                              placeholder='{"query":"form.company"}'
-                            />
-                            <input
-                              value={field.dropdown_tool_config?.output_path || ""}
-                              onChange={(e) =>
-                                updateFormField(fname, {
-                                  dropdown_tool_config: {
-                                    ...(field.dropdown_tool_config || { tool_name: "" }),
-                                    output_path: e.target.value || null,
-                                  },
-                                })
-                              }
-                              placeholder="Options output path (optional, e.g. data.items)"
-                            />
-                          </div>
-                        )}
-                        <div className="border rounded p-2 space-y-2">
-                          <div className="text-sm font-medium">Tool hook (optional)</div>
-                          <select
-                            value={field.tool_hook?.tool_name || ""}
-                            onChange={(e) => {
-                              const toolName = e.target.value || null;
-                              updateFormField(fname, {
-                                tool_hook: toolName
-                                  ? {
-                                      tool_name: toolName,
-                                      input_map: field.tool_hook?.input_map || {},
-                                      output_map: field.tool_hook?.output_map || {},
-                                    }
-                                  : null,
-                              });
-                            }}
-                          >
-                            <option value="">No tool hook</option>
-                            {toolsCfg?.tools.map((t) => (
-                              <option key={t.name} value={t.name}>
-                                {t.name}
-                              </option>
-                            ))}
-                          </select>
-                          {field.tool_hook?.tool_name && (
-                            <>
-                              <textarea
-                                value={getFieldDraft(
-                                  hookInputKey,
-                                  JSON.stringify(field.tool_hook?.input_map || {}, null, 2)
-                                )}
-                                onChange={(e) => updateFieldDraft(hookInputKey, e.target.value)}
-                                onBlur={(e) => {
-                                  const parsed = parseJsonMap(e.target.value);
-                                  if (!parsed) return;
-                                  updateFormField(fname, {
-                                    tool_hook: {
-                                      ...(field.tool_hook || { tool_name: "" }),
-                                      input_map: parsed,
-                                      output_map: field.tool_hook?.output_map || {},
-                                    },
-                                  });
-                                }}
-                                placeholder='{"customer_id":"form.customer_id"}'
-                              />
-                              <textarea
-                                value={getFieldDraft(
-                                  hookOutputKey,
-                                  JSON.stringify(field.tool_hook?.output_map || {}, null, 2)
-                                )}
-                                onChange={(e) => updateFieldDraft(hookOutputKey, e.target.value)}
-                                onBlur={(e) => {
-                                  const parsed = parseJsonMap(e.target.value);
-                                  if (!parsed) return;
-                                  updateFormField(fname, {
-                                    tool_hook: {
-                                      ...(field.tool_hook || { tool_name: "" }),
-                                      input_map: field.tool_hook?.input_map || {},
-                                      output_map: parsed,
-                                    },
-                                  });
-                                }}
-                                placeholder='{"plan_name":"plan.name"}'
-                              />
-                            </>
-                          )}
-                        </div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8 }}>
                           <input
                             value={field.pattern || ""}
@@ -990,82 +972,42 @@ export default function Home() {
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Tools</h2>
-          <button className="btn secondary" onClick={addTool}>
-            + Add tool
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Published versions</h2>
+          <button className="btn secondary" onClick={loadPublishedVersions} disabled={loadingVersions}>
+            {loadingVersions ? "Loading..." : "Refresh"}
           </button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-          {toolsCfg?.tools.map((tool) => (
-            <div key={tool.name} className="border rounded p-3 space-y-2">
-              <div className="flex justify-between items-center">
-                <input value={tool.name} onChange={(e) => updateTool(tool.name, { name: e.target.value })} />
-                <button className="btn secondary" onClick={() => deleteTool(tool.name)}>
-                  Remove
+        <p className="text-sm text-slate-600">Browse older published bot versions and inspect their configs.</p>
+        <div className="space-y-2">
+          {publishedVersions.length === 0 && <div className="text-sm text-slate-600">No published versions yet.</div>}
+          {publishedVersions.map((item) => (
+            <details key={item.version} className="border rounded p-2">
+              <summary className="cursor-pointer text-sm font-medium">
+                Version {item.version}
+                {item.created_at ? ` · ${item.created_at}` : ""}
+              </summary>
+              <div className="space-y-2" style={{ marginTop: 8 }}>
+                <button
+                  className="btn secondary"
+                  onClick={() => loadPublishedVersionConfig(item.version)}
+                  disabled={loadingVersionId === item.version}
+                >
+                  {loadingVersionId === item.version ? "Loading..." : "Load config"}
                 </button>
+                {versionConfigs[item.version] && (
+                  <pre style={{ whiteSpace: "pre-wrap" }}>
+                    {JSON.stringify(versionConfigs[item.version], null, 2)}
+                  </pre>
+                )}
               </div>
-              <input
-                className="w-full"
-                value={tool.description}
-                onChange={(e) => updateTool(tool.name, { description: e.target.value })}
-                placeholder="Description"
-              />
-              <input
-                className="w-full"
-                value={tool.url}
-                onChange={(e) => updateTool(tool.name, { url: e.target.value })}
-                placeholder="URL"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <select
-                  value={tool.http_method}
-                  onChange={(e) => updateTool(tool.name, { http_method: e.target.value as Tool["http_method"] })}
-                >
-                  {["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => (
-                    <option key={m}>{m}</option>
-                  ))}
-                </select>
-                <select
-                  value={tool.auth}
-                  onChange={(e) => updateTool(tool.name, { auth: e.target.value as Tool["auth"] })}
-                >
-                  <option value="none">None</option>
-                  <option value="api_key">API key</option>
-                  <option value="bearer">Bearer</option>
-                  <option value="managed_identity">Managed identity</option>
-                </select>
-                <select
-                  value={tool.role}
-                  onChange={(e) => updateTool(tool.name, { role: e.target.value as Tool["role"] })}
-                >
-                  <option value="pre-submit-validator">Pre-submit validator</option>
-                  <option value="data-enricher">Data enricher</option>
-                  <option value="submit-form">Submit form</option>
-                </select>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={tool.cache_enabled || false}
-                    onChange={(e) => updateTool(tool.name, { cache_enabled: e.target.checked })}
-                  />
-                  Cache responses
-                </label>
-                <input
-                  type="number"
-                  placeholder="Cache TTL (seconds)"
-                  value={tool.cache_ttl_seconds ?? ""}
-                  onChange={(e) =>
-                    updateTool(tool.name, { cache_ttl_seconds: Number(e.target.value) || null })
-                  }
-                />
-              </div>
-            </div>
+            </details>
           ))}
         </div>
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Knowledge base</h2>
+        <p className="text-sm text-slate-600">Configure retrieval and default knowledge base selection.</p>
         {knowledgeCfg && (
           <div className="space-y-3">
             <label>
@@ -1074,7 +1016,7 @@ export default function Home() {
                 checked={knowledgeCfg.enable_knowledge_base}
                 onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, enable_knowledge_base: e.target.checked })}
               />{" "}
-              Enable FAQ / AI search knowledge base
+              Enable FAQ / knowledge base
             </label>
             <div className="grid grid-cols-2 gap-2">
               <select
@@ -1090,7 +1032,6 @@ export default function Home() {
                   });
                 }}
               >
-                <option value="azure_ai_search">Azure AI Search</option>
                 <option value="pgvector">Postgres pgvector</option>
                 <option value="none">None</option>
               </select>
@@ -1134,29 +1075,6 @@ export default function Home() {
                 <option value="agentic">Agentic multi-step retrieval</option>
               </select>
             </div>
-            {knowledgeCfg.provider === "azure_ai_search" && (
-              <>
-                <input
-                  className="w-full"
-                  placeholder="Search endpoint"
-                  value={knowledgeCfg.endpoint || ""}
-                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, endpoint: e.target.value })}
-                />
-                <input
-                  className="w-full"
-                  placeholder="Index name"
-                  value={knowledgeCfg.index_name || ""}
-                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, index_name: e.target.value })}
-                />
-                <input
-                  className="w-full"
-                  type="password"
-                  placeholder="API key"
-                  value={knowledgeCfg.api_key || ""}
-                  onChange={(e) => setKnowledgeCfg({ ...knowledgeCfg, api_key: e.target.value })}
-                />
-              </>
-            )}
             <div className="grid grid-cols-2 gap-2 items-center">
               <label>Max agentic passes (for iterative retrieval)</label>
               <input
@@ -1178,124 +1096,29 @@ export default function Home() {
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
-        <div className="card">
-          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Persistence</h2>
-          {persistence && (
-            <div className="space-y-2">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={persistence.enable_cosmos}
-                  onChange={(e) => setPersistence({ ...persistence, enable_cosmos: e.target.checked })}
-                />{" "}
-                Enable Cosmos DB
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={persistence.use_managed_identity}
-                  onChange={(e) => setPersistence({ ...persistence, use_managed_identity: e.target.checked })}
-                />{" "}
-                Use managed identity
-              </label>
-              <input
-                className="w-full"
-                placeholder="Cosmos URI"
-                value={persistence.cosmos_account_uri || ""}
-                onChange={(e) => setPersistence({ ...persistence, cosmos_account_uri: e.target.value })}
-              />
-              {!persistence.use_managed_identity && (
-                <input
-                  className="w-full"
-                  placeholder="Cosmos key"
-                  value={persistence.cosmos_key || ""}
-                  onChange={(e) => setPersistence({ ...persistence, cosmos_key: e.target.value })}
-                />
-              )}
-              <div className="grid grid-cols-3 gap-2">
-                <input
-                  placeholder="Database"
-                  value={persistence.database || ""}
-                  onChange={(e) => setPersistence({ ...persistence, database: e.target.value })}
-                />
-                <input
-                  placeholder="Container"
-                  value={persistence.container || ""}
-                  onChange={(e) => setPersistence({ ...persistence, container: e.target.value })}
-                />
-                <input
-                  placeholder="Partition key"
-                  value={persistence.partition_key || ""}
-                  onChange={(e) => setPersistence({ ...persistence, partition_key: e.target.value })}
-                />
-              </div>
-              <div className="border rounded p-2 space-y-2">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={persistence.enable_semantic_cache}
-                    onChange={(e) => setPersistence({ ...persistence, enable_semantic_cache: e.target.checked })}
-                  />{" "}
-                  Enable semantic caching (Azure Cache for Redis)
-                </label>
-                {persistence.enable_semantic_cache && (
-                  <div className="space-y-2">
-                    <input
-                      className="w-full"
-                      placeholder="Redis connection string"
-                      value={persistence.redis_connection_string || ""}
-                      onChange={(e) => setPersistence({ ...persistence, redis_connection_string: e.target.value })}
-                    />
-                    <input
-                      className="w-full"
-                      placeholder="Redis password"
-                      type="password"
-                      value={persistence.redis_password || ""}
-                      onChange={(e) => setPersistence({ ...persistence, redis_password: e.target.value })}
-                    />
-                    <div className="grid grid-cols-2 gap-2 items-center">
-                      <label>Semantic TTL (seconds)</label>
-                      <input
-                        type="number"
-                        value={persistence.semantic_ttl_seconds}
-                        onChange={(e) =>
-                          setPersistence({ ...persistence, semantic_ttl_seconds: Number(e.target.value) || 0 })
-                        }
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Logging</h2>
-          {loggingCfg && (
-            <div className="space-y-2">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={loggingCfg.emit_trace_logs}
-                  onChange={(e) => setLoggingCfg({ ...loggingCfg, emit_trace_logs: e.target.checked })}
-                />{" "}
-                Emit trace logs
-              </label>
-              <select value={loggingCfg.mode} onChange={(e) => setLoggingCfg({ ...loggingCfg, mode: e.target.value as LoggingConfig["mode"] })}>
-                <option value="console">Console</option>
-                <option value="file">File</option>
-                <option value="appinsights">Azure App Insights</option>
-              </select>
-              <select value={loggingCfg.level} onChange={(e) => setLoggingCfg({ ...loggingCfg, level: e.target.value as LoggingConfig["level"] })}>
-                {["DEBUG", "INFO", "WARNING", "ERROR"].map((lvl) => (
-                  <option key={lvl}>{lvl}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
+      <div className="card">
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Logging</h2>
+        <p className="text-sm text-slate-600">Controls how runtime logs and trace events are stored.</p>
+        {loggingCfg && (
+          <div className="space-y-2">
+            <select
+              value={loggingCfg.mode}
+              onChange={(e) => setLoggingCfg({ ...loggingCfg, mode: e.target.value as LoggingConfig["mode"] })}
+            >
+              <option value="console">Console</option>
+              <option value="file">File</option>
+              <option value="appinsights">Azure App Insights</option>
+            </select>
+            <select
+              value={loggingCfg.level}
+              onChange={(e) => setLoggingCfg({ ...loggingCfg, level: e.target.value as LoggingConfig["level"] })}
+            >
+              {["DEBUG", "INFO", "WARNING", "ERROR"].map((lvl) => (
+                <option key={lvl}>{lvl}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
             </>
           )}
@@ -1318,10 +1141,19 @@ export default function Home() {
                   Refresh threads
                 </button>
               </div>
+              <p className="text-sm text-slate-600">Search threads by ID and inspect conversation history.</p>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-2">
+                  <input
+                    className="w-full"
+                    placeholder="Filter by thread id"
+                    value={threadSearch}
+                    onChange={(e) => setThreadSearch(e.target.value)}
+                  />
                   {threads.length === 0 && <p>No threads yet.</p>}
-                  {threads.map((t) => (
+                  {threads
+                    .filter((t) => t.thread_id.toLowerCase().includes(threadSearch.trim().toLowerCase()))
+                    .map((t) => (
                     <button
                       key={t.thread_id}
                       className="btn secondary"
@@ -1355,11 +1187,20 @@ export default function Home() {
                   Refresh traces
                 </button>
               </div>
+              <p className="text-sm text-slate-600">Click a trace to expand the full inputs, outputs, and state.</p>
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-2">
                   <div className="text-sm text-slate-600">Threads</div>
                   {threads.length === 0 && <p>No threads yet.</p>}
-                  {threads.map((t) => (
+                  <input
+                    className="w-full"
+                    placeholder="Filter by thread id"
+                    value={threadSearch}
+                    onChange={(e) => setThreadSearch(e.target.value)}
+                  />
+                  {threads
+                    .filter((t) => t.thread_id.toLowerCase().includes(threadSearch.trim().toLowerCase()))
+                    .map((t) => (
                     <button
                       key={t.thread_id}
                       className={`btn secondary w-full ${selectedThreadId === t.thread_id ? "ring-2 ring-slate-800" : ""}`}
@@ -1382,7 +1223,6 @@ export default function Home() {
                     const input = data.input || "";
                     const output = data.output || "";
                     const tokens = data.tokens || {};
-                    const tools = data.tools || {};
                     const events = data.events || [];
                     const stateBefore = data.state_before || {};
                     const stateAfter = data.state_after || data.state || {};
@@ -1390,75 +1230,65 @@ export default function Home() {
                       .map(([key, value]) => `${key}: ${String(value)}`)
                       .join(", ");
                     return (
-                      <div key={trace.trace_id} className="border rounded p-3 space-y-2">
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <div>
-                            <div style={{ fontWeight: 600 }}>Trace {trace.trace_id}</div>
-                            <div className="text-sm text-slate-600">
-                              Version: {trace.version}
-                              {trace.created_at ? ` · ${trace.created_at}` : ""}
+                      <details key={trace.trace_id} className="border rounded p-3">
+                        <summary className="cursor-pointer">
+                          <div style={{ fontWeight: 600 }}>Trace {trace.trace_id}</div>
+                          <div className="text-sm text-slate-600">
+                            Version: {trace.version}
+                            {trace.created_at ? ` · ${trace.created_at}` : ""}
+                          </div>
+                          <div className="text-sm text-slate-600">Input: {String(input).slice(0, 120)}</div>
+                        </summary>
+                        <div className="space-y-2" style={{ marginTop: 8 }}>
+                          <div className="text-sm">
+                            <strong>Input:</strong> {String(input).slice(0, 160)}
+                          </div>
+                          <div className="text-sm">
+                            <strong>Output:</strong> {String(output).slice(0, 160)}
+                          </div>
+                          {tokenSummary && (
+                            <div className="text-sm">
+                              <strong>Tokens:</strong> {tokenSummary}
+                            </div>
+                          )}
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+                              <div className="text-slate-600">Input</div>
+                              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(input, null, 2)}</pre>
+                            </div>
+                            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+                              <div className="text-slate-600">Output</div>
+                              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(output, null, 2)}</pre>
                             </div>
                           </div>
+                          <details className="border rounded p-2">
+                            <summary className="cursor-pointer font-medium">Event timeline</summary>
+                            <div className="space-y-2" style={{ marginTop: 8 }}>
+                              {Array.isArray(events) && events.length > 0 ? (
+                                events.map((evt: any, idx: number) => renderEventDetail(evt, idx))
+                              ) : (
+                                <div className="text-sm text-slate-600">No events recorded.</div>
+                              )}
+                            </div>
+                          </details>
+                          <details className="border rounded p-2">
+                            <summary className="cursor-pointer font-medium">Tokens</summary>
+                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tokens, null, 2)}</pre>
+                          </details>
+                          <details className="border rounded p-2">
+                            <summary className="cursor-pointer font-medium">State before</summary>
+                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                              {JSON.stringify(stateBefore, null, 2)}
+                            </pre>
+                          </details>
+                          <details className="border rounded p-2">
+                            <summary className="cursor-pointer font-medium">State after</summary>
+                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                              {JSON.stringify(stateAfter, null, 2)}
+                            </pre>
+                          </details>
                         </div>
-                        <div className="text-sm">
-                          <strong>Input:</strong> {String(input).slice(0, 160)}
-                        </div>
-                        <div className="text-sm">
-                          <strong>Output:</strong> {String(output).slice(0, 160)}
-                        </div>
-                        {tokenSummary && (
-                          <div className="text-sm">
-                            <strong>Tokens:</strong> {tokenSummary}
-                          </div>
-                        )}
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Event flow</summary>
-                          {Array.isArray(events) && events.length > 0 ? (
-                            <ol style={{ marginTop: 8, paddingLeft: 18 }}>
-                              {events.map((evt: any, idx: number) => {
-                                const phaseLabel = evt?.phase ? ` (${evt.phase})` : "";
-                                const title = evt?.node ? `${evt.node}${phaseLabel}` : evt?.event || `event_${idx + 1}`;
-                                return (
-                                  <li key={`${trace.trace_id}-evt-${idx}`} className="text-sm">
-                                    {title}
-                                    {evt?.ts ? ` · ${new Date(evt.ts * 1000).toLocaleTimeString()}` : ""}
-                                  </li>
-                                );
-                              })}
-                            </ol>
-                          ) : (
-                            <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
-                          )}
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Input</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(input, null, 2)}</pre>
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Output</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(output, null, 2)}</pre>
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Tokens</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tokens, null, 2)}</pre>
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">Tools</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(tools, null, 2)}</pre>
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">State before</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
-                            {JSON.stringify(stateBefore, null, 2)}
-                          </pre>
-                        </details>
-                        <details className="border rounded p-2">
-                          <summary className="cursor-pointer font-medium">State after</summary>
-                          <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
-                            {JSON.stringify(stateAfter, null, 2)}
-                          </pre>
-                        </details>
-                      </div>
+                      </details>
                     );
                   })}
                 </div>
@@ -1470,6 +1300,7 @@ export default function Home() {
             <div className="space-y-3">
               <div className="card">
                 <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Knowledge bases</h2>
+                <p className="text-sm text-slate-600">Create and manage pgvector knowledge bases.</p>
                 <div className="space-y-2">
                 <input
                   className="w-full"
@@ -1477,9 +1308,8 @@ export default function Home() {
                   value={kbName}
                   onChange={(e) => setKbName(e.target.value)}
                 />
-                <select value={kbProvider} onChange={(e) => setKbProvider(e.target.value as "pgvector" | "azure_ai_search")}>
+                <select value={kbProvider} onChange={(e) => setKbProvider(e.target.value as "pgvector")}>
                   <option value="pgvector">Postgres pgvector</option>
-                  <option value="azure_ai_search">Azure AI Search</option>
                 </select>
                 <textarea
                   className="w-full"
@@ -1495,7 +1325,12 @@ export default function Home() {
                   {knowledgeBases.length === 0 && <p>No knowledge bases yet.</p>}
                   {knowledgeBases.map((kb) => (
                     <div key={kb.id} className="border rounded p-3">
-                      <div style={{ fontWeight: 600 }}>{kb.name}</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div style={{ fontWeight: 600 }}>{kb.name}</div>
+                        <button className="btn secondary" onClick={() => deleteKnowledgeBase(kb.id)}>
+                          Delete
+                        </button>
+                      </div>
                       <div className="text-sm text-slate-600">{kb.description}</div>
                       <div className="space-y-2" style={{ marginTop: 8 }}>
                         <input
@@ -1512,6 +1347,53 @@ export default function Home() {
                         >
                           {uploadingKbId === kb.id ? "Uploading..." : "Upload file"}
                         </button>
+                        <div className="border rounded p-2 space-y-2">
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div className="text-sm font-medium">Vectorized files</div>
+                            <button className="btn secondary" onClick={() => loadKnowledgeBaseFiles(kb.id)}>
+                              Refresh
+                            </button>
+                          </div>
+                          {(kbFiles[kb.id] || []).length === 0 && (
+                            <div className="text-sm text-slate-600">No files indexed yet.</div>
+                          )}
+                          {(kbFiles[kb.id] || []).map((item) => (
+                            <details key={`${kb.id}-${item.filename}`} className="border rounded p-2">
+                              <summary className="cursor-pointer text-sm font-medium">
+                                {item.filename} · {item.chunks} chunks
+                                {item.last_indexed_at ? ` · ${item.last_indexed_at}` : ""}
+                              </summary>
+                              <div className="space-y-2" style={{ marginTop: 8 }}>
+                                <div className="flex gap-2">
+                                  <button
+                                    className="btn secondary"
+                                    onClick={() => loadKnowledgeBaseFileChunks(kb.id, item.filename)}
+                                  >
+                                    View chunks
+                                  </button>
+                                  <button
+                                    className="btn secondary"
+                                    onClick={() => deleteKnowledgeBaseFile(kb.id, item.filename)}
+                                  >
+                                    Delete file
+                                  </button>
+                                </div>
+                                {(kbFileChunks[kb.id]?.[item.filename] || []).length === 0 && (
+                                  <div className="text-sm text-slate-600">No chunks loaded.</div>
+                                )}
+                                {(kbFileChunks[kb.id]?.[item.filename] || []).map((chunk) => (
+                                  <div key={chunk.id} className="border rounded p-2 text-sm">
+                                    <div className="text-slate-600">
+                                      Chunk {chunk.chunk_index ?? chunk.id}
+                                      {chunk.created_at ? ` · ${chunk.created_at}` : ""}
+                                    </div>
+                                    <div>{chunk.content}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          ))}
+                        </div>
                         <textarea
                           className="w-full"
                           placeholder="Paste content to index"

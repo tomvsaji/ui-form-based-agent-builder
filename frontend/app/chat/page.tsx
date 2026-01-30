@@ -148,6 +148,55 @@ export default function ChatTester() {
     resetThread();
   }, []);
 
+  const formatEventTime = (ts?: number) => {
+    if (!ts) return "";
+    return new Date(ts * 1000).toLocaleTimeString();
+  };
+
+  const renderEventDetail = (evt: any, idx: number) => {
+    const title = evt?.node || evt?.event || `event_${idx + 1}`;
+    const phase = evt?.phase ? ` · ${evt.phase}` : "";
+    const timestamp = formatEventTime(evt?.ts);
+    const input = evt?.input;
+    const output = evt?.output;
+    const llm = evt?.llm;
+    const error = evt?.error;
+    return (
+      <details key={`evt-${idx}`} className="border rounded p-2">
+        <summary className="cursor-pointer text-sm font-medium">
+          {title}
+          {phase}
+          {timestamp ? ` · ${timestamp}` : ""}
+        </summary>
+        <div className="space-y-2" style={{ marginTop: 8 }}>
+          {error && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#fef2f2", borderColor: "#fecaca" }}>
+              <strong>Error:</strong> {String(error)}
+            </div>
+          )}
+          {input !== undefined && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+              <div className="text-slate-600">Input</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(input, null, 2)}</pre>
+            </div>
+          )}
+          {output !== undefined && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f8fafc" }}>
+              <div className="text-slate-600">Output</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(output, null, 2)}</pre>
+            </div>
+          )}
+          {llm && (
+            <div className="border rounded p-2 text-sm" style={{ background: "#f0fdf4", borderColor: "#bbf7d0" }}>
+              <div className="text-slate-600">LLM</div>
+              <pre style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{JSON.stringify(llm, null, 2)}</pre>
+            </div>
+          )}
+        </div>
+      </details>
+    );
+  };
+
   return (
     <main style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 16px" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -244,6 +293,14 @@ export default function ChatTester() {
                 className="w-full"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!loading) {
+                      void sendMessage();
+                    }
+                  }
+                }}
                 placeholder="Type a message"
               />
             </div>
@@ -314,22 +371,14 @@ export default function ChatTester() {
                     <strong>Output:</strong> {String(output).slice(0, 120)}
                   </div>
                   <details className="border rounded p-2" style={{ marginTop: 8 }}>
-                    <summary className="cursor-pointer text-sm font-medium">Event flow</summary>
-                    {Array.isArray(events) && events.length > 0 ? (
-                      <ol style={{ marginTop: 8, paddingLeft: 18 }}>
-                        {events.map((evt: any, idx: number) => {
-                          const phaseLabel = evt?.phase ? ` (${evt.phase})` : "";
-                          const title = evt?.node ? `${evt.node}${phaseLabel}` : evt?.event || `event_${idx + 1}`;
-                          return (
-                            <li key={`${trace.trace_id}-evt-${idx}`} className="text-sm">
-                              {title}
-                            </li>
-                          );
-                        })}
-                      </ol>
-                    ) : (
-                      <pre style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{JSON.stringify(events, null, 2)}</pre>
-                    )}
+                    <summary className="cursor-pointer text-sm font-medium">Event timeline</summary>
+                    <div className="space-y-2" style={{ marginTop: 8 }}>
+                      {Array.isArray(events) && events.length > 0 ? (
+                        events.map((evt: any, idx: number) => renderEventDetail(evt, idx))
+                      ) : (
+                        <div className="text-sm text-slate-600">No events recorded.</div>
+                      )}
+                    </div>
                   </details>
                 </details>
               );

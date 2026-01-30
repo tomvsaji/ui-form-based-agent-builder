@@ -111,12 +111,37 @@ def chat(req: RuntimeMessageRequest):
         last_assistant = next((m.get("content") for m in reversed(messages) if m.get("role") == "assistant"), None)
         reply = last_assistant or "I was not able to generate a response."
 
+    if result.get("completed") and not (result.get("submission_executed") or previous_state.get("submission_executed")):
+        form = forms_config.form_by_id(result.get("current_form_id", ""))
+        if form and form.submission_url:
+            tool_to_call = ToolDefinition(
+                name="form_submission_webhook",
+                description="Form submission webhook",
+                http_method="POST",
+                url=form.submission_url,
+                headers={},
+                role="submit-form",
+            )
+            tool_payload = result.get("form_values", {})
+            tool_result = execute_tool(tool_to_call, tool_payload, tenant_id, agent_id, version)
+            result["submission_executed"] = True
+            result["submission_url"] = str(form.submission_url)
+            result["submission_response"] = tool_result
+            result.setdefault("trace_events", []).append(
+                {
+                    "node": "submission_webhook",
+                    "event": "webhook_call",
+                    "url": str(form.submission_url),
+                    "result": tool_result,
+                }
+            )
+
     if (
         os.getenv("TOOLS_ENABLED", "false").lower() == "true"
         and result.get("completed")
         and not result.get("tool_executed")
+        and not (form and form.submission_url)
     ):
-        form = forms_config.form_by_id(result.get("current_form_id", ""))
         tool_to_call = None
         if form and form.submission and form.submission.type == "tool" and form.submission.tool_name:
             tool_to_call = next((t for t in tools_config.tools if t.name == form.submission.tool_name), None)

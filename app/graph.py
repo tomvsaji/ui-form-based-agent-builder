@@ -6,8 +6,15 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from .embeddings import embed_text
-from .llm import answer_with_context, extract_fields, select_intent
-from .models import AgentState, FieldDefinition, FormsConfig, KnowledgeBaseConfig, ToolsConfig
+from .llm import (
+    answer_with_context,
+    explain_validation_error,
+    explain_validator_failure,
+    extract_fields,
+    generate_field_prompt,
+    select_intent,
+)
+from .models import AgentState, FieldDefinition, FormsConfig, KnowledgeBaseConfig, ToolsConfig, ValidatorDefinition
 from .storage import get_tenant_id, list_knowledge_bases, search_kb_documents
 
 
@@ -88,6 +95,154 @@ def _validate_field(
         if not re.match(pattern, text_val):
             return False, "Value does not match required pattern.", None
     return True, "", text_val
+
+
+def _coerce_number(value: object) -> Optional[float]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _evaluate_condition(condition, form_values: Dict[str, object]) -> Optional[bool]:
+    field_value = form_values.get(condition.field)
+    if condition.operator == "is_empty":
+        return field_value in {None, "", []}
+    if condition.operator == "not_empty":
+        return field_value not in {None, "", []}
+
+    if field_value is None:
+        return None
+
+    if condition.operator == "equals":
+        return field_value == condition.value
+    if condition.operator == "not_equals":
+        return field_value != condition.value
+    if condition.operator == "contains":
+        return str(condition.value) in str(field_value)
+
+    left = _coerce_number(field_value)
+    right = _coerce_number(condition.value)
+    if left is None or right is None:
+        return None
+    if condition.operator == "gt":
+        return left > right
+    if condition.operator == "gte":
+        return left >= right
+    if condition.operator == "lt":
+        return left < right
+    if condition.operator == "lte":
+        return left <= right
+    return None
+
+
+def _validator_triggered(validator: ValidatorDefinition, form_values: Dict[str, object]) -> bool:
+    results = []
+    for condition in validator.conditions:
+        result = _evaluate_condition(condition, form_values)
+        if result is None:
+            return False
+        results.append(result)
+    if not results:
+        return False
+    if validator.match == "any":
+        return any(results)
+    return all(results)
+
+
+def _field_prompt(form, field: FieldDefinition, options: Optional[list[str]]) -> Tuple[str, Dict[str, object]]:
+    payload = {
+        "form": {"name": form.name, "description": form.description},
+        "field": {
+            "name": field.name,
+            "label": field.label,
+            "type": field.type,
+            "required": field.required,
+            "options": options or field.dropdown_options or [],
+            "ui": field.ui.model_dump() if field.ui else None,
+            "constraints": field.constraints.model_dump() if field.constraints else None,
+            "pattern": field.pattern,
+            "min_length": field.min_length,
+            "max_length": field.max_length,
+            "minimum": field.minimum,
+            "maximum": field.maximum,
+        },
+    }
+    try:
+        prompt, meta = generate_field_prompt(payload["form"], payload["field"])
+        return prompt, meta
+    except Exception as exc:
+        fallback = f"Please provide {field.label} ({field.type})."
+        return fallback, {"error": str(exc)}
+
+
+def _validation_reply(
+    form,
+    field: FieldDefinition,
+    error_msg: str,
+    raw_value: Optional[str],
+    options: Optional[list[str]],
+) -> Tuple[str, Dict[str, object]]:
+    payload = {
+        "field": {
+            "name": field.name,
+            "label": field.label,
+            "type": field.type,
+            "required": field.required,
+            "options": options or field.dropdown_options or [],
+            "constraints": field.constraints.model_dump() if field.constraints else None,
+            "pattern": field.pattern,
+            "min_length": field.min_length,
+            "max_length": field.max_length,
+            "minimum": field.minimum,
+            "maximum": field.maximum,
+        },
+        "error": error_msg,
+        "user_input": raw_value,
+        "form": {"name": form.name, "description": form.description},
+    }
+    try:
+        explanation, meta = explain_validation_error(payload)
+    except Exception as exc:
+        explanation = error_msg
+        meta = {"error": str(exc)}
+    question, prompt_meta = _field_prompt(form, field, options)
+    meta.update({"prompt": prompt_meta})
+    return f"{explanation} {question}".strip(), meta
+
+
+def _validator_reply(
+    form,
+    validator: ValidatorDefinition,
+    form_values: Dict[str, object],
+) -> Tuple[str, Dict[str, object]]:
+    payload = {
+        "rule": {
+            "id": validator.id,
+            "name": validator.name,
+            "message": validator.message,
+            "match": validator.match,
+            "conditions": [c.model_dump() for c in validator.conditions],
+        },
+        "values": form_values,
+        "form": {"name": form.name, "description": form.description},
+    }
+    try:
+        explanation, meta = explain_validator_failure(payload)
+        return explanation, meta
+    except Exception as exc:
+        return validator.message, {"error": str(exc)}
+
+
+def _first_validator_failure(form, form_values: Dict[str, object]) -> Optional[ValidatorDefinition]:
+    for validator in form.validators:
+        if _validator_triggered(validator, form_values):
+            return validator
+    return None
 
 
 def _summarize_form(state: AgentState, form_id: str, forms_config: FormsConfig) -> str:
@@ -395,12 +550,51 @@ def build_graph(
                 options = state.get("field_options", {}).get(field.name)
                 ok, error_msg, parsed_value = _validate_field(field, state.get("last_user_message"), options)
                 if not ok:
-                    state["reply"] = f"{error_msg} Please provide {field.label}."
+                    reply, meta = _validation_reply(
+                        form,
+                        field,
+                        error_msg,
+                        state.get("last_user_message"),
+                        options,
+                    )
+                    state["reply"] = reply
+                    _trace_node_event(
+                        state,
+                        "form_orchestrator",
+                        "event",
+                        {"event": "field_validation_failed", "field": field.name, "llm": meta},
+                    )
                     log_end({"reply": state.get("reply"), "error": "validation_failed"})
                     return state
                 state["form_values"][field_name] = parsed_value
                 state["current_step_index"] = idx + 1
                 state["awaiting_field"] = False
+                failing_validator = _first_validator_failure(form, state["form_values"])
+                if failing_validator:
+                    rule_reply, meta = _validator_reply(form, failing_validator, state["form_values"])
+                    target_field = next(
+                        (c.field for c in failing_validator.conditions if form.field_by_name(c.field)),
+                        None,
+                    )
+                    if target_field and target_field in state["form_values"]:
+                        state["form_values"].pop(target_field, None)
+                        state["current_step_index"] = form.field_order.index(target_field)
+                        state["awaiting_field"] = True
+                        field_to_fix = form.field_by_name(target_field)
+                        options = state.get("field_options", {}).get(field_to_fix.name) if field_to_fix else None
+                        prompt, prompt_meta = _field_prompt(form, field_to_fix, options) if field_to_fix else ("", {})
+                        meta.update({"prompt": prompt_meta})
+                        state["reply"] = f"{rule_reply} {prompt}".strip()
+                    else:
+                        state["reply"] = rule_reply
+                    _trace_node_event(
+                        state,
+                        "form_orchestrator",
+                        "event",
+                        {"event": "validator_failed", "validator": failing_validator.name, "llm": meta},
+                    )
+                    log_end({"reply": state.get("reply"), "error": "validator_failed"})
+                    return state
                 if state["current_step_index"] >= len(form.field_order):
                     state["completed"] = True
                     state["reply"] = _summarize_form(state, form.id, forms_config)
@@ -410,7 +604,15 @@ def build_graph(
             next_field_name = form.field_order[state["current_step_index"]]
             next_field = form.field_by_name(next_field_name)
             state["awaiting_field"] = True
-            state["reply"] = f"Please provide {next_field.label} ({next_field.type})."
+            options = state.get("field_options", {}).get(next_field.name)
+            prompt, meta = _field_prompt(form, next_field, options)
+            state["reply"] = prompt
+            _trace_node_event(
+                state,
+                "form_orchestrator",
+                "event",
+                {"event": "field_prompt", "field": next_field.name, "llm": meta},
+            )
             log_end({"reply": state.get("reply"), "next_field": next_field.name})
             return state
 
@@ -485,6 +687,30 @@ def build_graph(
             log_end({"reply": state.get("reply"), "missing_fields": missing})
             return state
 
+        failing_validator = _first_validator_failure(form, state["form_values"])
+        if failing_validator:
+            rule_reply, meta = _validator_reply(form, failing_validator, state["form_values"])
+            target_field = next(
+                (c.field for c in failing_validator.conditions if form.field_by_name(c.field)),
+                None,
+            )
+            if target_field:
+                field_to_fix = form.field_by_name(target_field)
+                options = state.get("field_options", {}).get(field_to_fix.name) if field_to_fix else None
+                prompt, prompt_meta = _field_prompt(form, field_to_fix, options) if field_to_fix else ("", {})
+                meta.update({"prompt": prompt_meta})
+                state["reply"] = f"{rule_reply} {prompt}".strip()
+            else:
+                state["reply"] = rule_reply
+            _trace_node_event(
+                state,
+                "form_orchestrator",
+                "event",
+                {"event": "validator_failed", "validator": failing_validator.name, "llm": meta},
+            )
+            log_end({"reply": state.get("reply"), "error": "validator_failed"})
+            return state
+
         state["completed"] = True
         state["reply"] = _summarize_form(state, form.id, forms_config)
         log_end({"reply": state.get("reply"), "completed": True, "form_values": state.get("form_values")})
@@ -507,7 +733,8 @@ def build_graph(
                     field_name = form.field_order[idx]
                     field = form.field_by_name(field_name)
                     if field:
-                        reply = f"Please provide {field.label} ({field.type})."
+                        options = state.get("field_options", {}).get(field.name)
+                        reply, _ = _field_prompt(form, field, options)
         reply = reply or "Acknowledged."
         state["reply"] = reply
         state["messages"].append({"role": "assistant", "content": reply})
