@@ -1,65 +1,42 @@
-:root {
-  font-family: "Inter", system-ui, -apple-system, sans-serif;
-  line-height: 1.5;
-  color: #0f172a;
-  background-color: #f8fafc;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 215 20% 65%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 215 35% 92%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;
+    --radius: 12px;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
 }
-
-body {
-  margin: 0;
-  padding: 0;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button {
-  cursor: pointer;
-}
-
-.card {
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
-}
-
-.btn {
-  background: #0f172a;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-weight: 600;
-}
-
-.btn.secondary {
-  background: #e2e8f0;
-  color: #0f172a;
-}
-
-/* Minimal utility classes (tailwind-lite) */
-.w-full { width: 100%; }
-.mt-1 { margin-top: 4px; }
-.border { border: 1px solid #e2e8f0; }
-.rounded { border-radius: 8px; }
-.p-3 { padding: 12px; }
-.space-y-2 > * + * { margin-top: 8px; }
-.space-y-3 > * + * { margin-top: 12px; }
-.space-x-2 > * + * { margin-left: 8px; }
-.flex { display: flex; }
-.justify-between { justify-content: space-between; }
-.items-center { align-items: center; }
-.grid { display: grid; }
-.grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.gap-2 { gap: 8px; }
