@@ -56,7 +56,6 @@ export function ChatPanel({ agentName }: { agentName: string }) {
             <RefreshCcw className="h-4 w-4" />
             Reset session
           </Button>
-          <Button variant="secondary" size="sm">View logs</Button>
         </div>
       </div>
 

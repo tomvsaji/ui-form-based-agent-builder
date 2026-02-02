@@ -2,14 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, CreditCard, FileText, PlayCircle, Settings } from "lucide-react";
+import { Bot, CreditCard, Settings } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/runs", label: "Runs", icon: PlayCircle },
-  { href: "/logs", label: "Logs", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/billing", label: "Billing", icon: CreditCard },
 ];
