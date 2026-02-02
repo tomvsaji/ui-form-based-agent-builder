@@ -4,6 +4,10 @@ import { useMemo, useState } from "react";
 import { Copy, PlayCircle, Trash2 } from "lucide-react";
 
 import { ChatPanel } from "@/components/ChatPanel";
+import { BuilderPanel } from "@/components/BuilderPanel";
+import { LogsPanel } from "@/components/panels/LogsPanel";
+import { RunsPanel } from "@/components/panels/RunsPanel";
+import { SubmissionsPanel } from "@/components/panels/SubmissionsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,14 +63,30 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
           </div>
         </div>
 
-        <Tabs defaultValue="overview" className="w-full">
+        <Tabs defaultValue="build" className="w-full">
           <TabsList>
+            <TabsTrigger value="build">Build</TabsTrigger>
+            <TabsTrigger value="runs">Runs</TabsTrigger>
+            <TabsTrigger value="logs">Logs</TabsTrigger>
+            <TabsTrigger value="submissions">Submissions</TabsTrigger>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
             <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
             <TabsTrigger value="runtime">Runtime</TabsTrigger>
           </TabsList>
 
+          <TabsContent value="build" className="space-y-4">
+            <BuilderPanel />
+          </TabsContent>
+          <TabsContent value="runs" className="space-y-4">
+            <RunsPanel />
+          </TabsContent>
+          <TabsContent value="logs" className="space-y-4">
+            <LogsPanel />
+          </TabsContent>
+          <TabsContent value="submissions" className="space-y-4">
+            <SubmissionsPanel />
+          </TabsContent>
           <TabsContent value="overview" className="space-y-4">
             <Card>
               <CardHeader>
@@ -143,7 +163,10 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
               </CardHeader>
               <CardContent className="space-y-4">
                 {tools.map((tool) => (
-                  <div key={tool.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4">
+                  <div
+                    key={tool.id}
+                    className={`flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4 ${tool.enabled ? "" : "opacity-50"}`}
+                  >
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <div className="text-sm font-semibold text-slate-900">{tool.name}</div>
@@ -152,12 +175,22 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                             {tool.badge}
                           </Badge>
                         )}
+                        {!tool.enabled && (
+                          <Badge variant="outline" className="uppercase">
+                            Unavailable
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-xs text-slate-500">{tool.description}</div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <Switch defaultChecked={tool.enabled} />
-                      <Button variant="outline" size="sm" onClick={() => setSelectedTool(tool.id)}>
+                      <Switch defaultChecked={tool.enabled} disabled={!tool.enabled} />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedTool(tool.id)}
+                        disabled={!tool.enabled}
+                      >
                         Configure
                       </Button>
                     </div>
@@ -198,7 +231,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
               <CardHeader className="flex flex-row items-center justify-between">
                 <div>
                   <CardTitle>Knowledge sources</CardTitle>
-                  <CardDescription>Manage indexed files, URLs, and databases.</CardDescription>
+                  <CardDescription>Backed by Postgres (pgvector) for embeddings and retrieval.</CardDescription>
                 </div>
                 <Dialog>
                   <DialogTrigger asChild>
@@ -207,18 +240,16 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle>Add knowledge source</DialogTitle>
-                      <DialogDescription>Connect a new file, URL, or database to this agent.</DialogDescription>
+                      <DialogDescription>Register a new Postgres-backed source for this agent.</DialogDescription>
                     </DialogHeader>
                     <div className="space-y-3">
                       <Input placeholder="Source name or URL" />
-                      <Select defaultValue="File">
+                      <Select defaultValue="Postgres">
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="File">File</SelectItem>
-                          <SelectItem value="URL">URL</SelectItem>
-                          <SelectItem value="Database">Database</SelectItem>
+                          <SelectItem value="Postgres">Postgres (pgvector)</SelectItem>
                         </SelectContent>
                       </Select>
                       <Textarea placeholder="Optional description or tags" />
