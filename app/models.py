@@ -133,12 +133,21 @@ class StepDefinition(BaseModel):
     transitions: List[TransitionDefinition] = Field(default_factory=list)
 
 
+class DeliveryDefinition(BaseModel):
+    type: Literal["db", "email", "sheets", "webhook"] = "db"
+    email_to: Optional[str] = None
+    sheet_id: Optional[str] = None
+    sheet_tab: Optional[str] = None
+    webhook_url: Optional[HttpUrl] = None
+
+
 class FormDefinition(BaseModel):
     id: str
     name: str
     title: Optional[str] = None
     description: str
-    submission_url: HttpUrl
+    submission_url: Optional[HttpUrl] = None
+    delivery: DeliveryDefinition = Field(default_factory=DeliveryDefinition)
     mode: Literal["step-by-step", "one-shot"] = "step-by-step"
     field_order: List[str]
     fields: List[FieldDefinition]

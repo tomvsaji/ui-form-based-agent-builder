@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,14 +10,21 @@ from pydantic import BaseModel
 from .cache import build_cache_key, cache_get, cache_set, get_redis
 from .graph import build_graph
 from .models import ChatResponse, FormsConfig, KnowledgeBaseConfig, ToolCallConfig, ToolDefinition, ToolsConfig
+from .google_oauth import refresh_credentials_if_needed, token_to_credentials
+from .google_sheets import append_form_submission
+from .notifications import send_email
 from .storage import (
+    create_form_submission,
     get_agent_id,
     get_latest_version_payload,
     get_tenant_id,
     get_thread_state,
     get_version_config,
+    get_oauth_credential,
     log_chat,
     log_trace,
+    update_form_submission_delivery,
+    upsert_oauth_credential,
     upsert_thread_state,
 )
 from .tools_runtime import execute_tool
@@ -100,12 +108,38 @@ def chat(req: RuntimeMessageRequest):
     state_input["trace_events"] = []
     state_input["llm_usage"] = {}
 
-    result = graph_app.invoke(state_input, config={"configurable": {"thread_id": req.thread_id}})
+    command = req.message.strip().lower()
+    if command in {"/cancel", "/complete"}:
+        result = dict(previous_state)
+        result.setdefault("form_values", {})
+        result.setdefault("trace_events", [])
+        result["llm_usage"] = {}
+        if command == "/cancel":
+            result["completed"] = False
+            result["awaiting_field"] = False
+            result["current_step_index"] = 0
+            result["current_form_id"] = None
+            result["form_values"] = {}
+            result.setdefault("trace_events", []).append({"node": "tester_command", "event": "cancel"})
+            reply = "Form cancelled. You can start a new request."
+        else:
+            if not previous_state.get("current_form_id"):
+                result["completed"] = False
+                result.setdefault("trace_events", []).append({"node": "tester_command", "event": "complete_no_form"})
+                reply = "No active form to complete."
+            else:
+                result["completed"] = True
+                result["awaiting_field"] = False
+                result.setdefault("trace_events", []).append({"node": "tester_command", "event": "complete"})
+                reply = "Form marked complete by tester. Delivering submission."
+        result["reply"] = reply
+    else:
+        result = graph_app.invoke(state_input, config={"configurable": {"thread_id": req.thread_id}})
+        reply = result.get("reply")
     form = forms_config.form_by_id(result.get("current_form_id", "")) if result.get("current_form_id") else None
     if form:
         _maybe_run_tool_hook(previous_state, result, form, tools_config, tenant_id, agent_id, version)
         _maybe_fetch_dropdown_options(result, form, tools_config, tenant_id, agent_id, version)
-    reply = result.get("reply")
     if not reply:
         messages = result.get("messages", [])
         last_assistant = next((m.get("content") for m in reversed(messages) if m.get("role") == "assistant"), None)
@@ -113,26 +147,87 @@ def chat(req: RuntimeMessageRequest):
 
     if result.get("completed") and not (result.get("submission_executed") or previous_state.get("submission_executed")):
         form = forms_config.form_by_id(result.get("current_form_id", ""))
-        if form and form.submission_url:
-            tool_to_call = ToolDefinition(
-                name="form_submission_webhook",
-                description="Form submission webhook",
-                http_method="POST",
-                url=form.submission_url,
-                headers={},
-                role="submit-form",
+        if form:
+            form_values = result.get("form_values", {}) or {}
+            delivery = form.delivery
+            delivery_type = delivery.type
+            webhook_url = delivery.webhook_url or form.submission_url
+            if delivery_type == "db" and webhook_url and not delivery.webhook_url:
+                delivery_type = "webhook"
+
+            delivery_target = None
+            if delivery_type == "email":
+                delivery_target = delivery.email_to
+            elif delivery_type == "sheets":
+                delivery_target = delivery.sheet_id
+            elif delivery_type == "webhook":
+                delivery_target = str(webhook_url) if webhook_url else None
+
+            submission_id = create_form_submission(
+                tenant_id,
+                agent_id,
+                version,
+                req.thread_id,
+                form.id,
+                form.name,
+                delivery_type,
+                form_values,
+                delivery_target=delivery_target,
             )
-            tool_payload = result.get("form_values", {})
-            tool_result = execute_tool(tool_to_call, tool_payload, tenant_id, agent_id, version)
+
+            delivery_status = "stored"
+            delivery_result: Dict[str, Any] = {"type": delivery_type}
+            try:
+                if delivery_type == "email":
+                    if not delivery.email_to:
+                        raise RuntimeError("Email delivery requires a recipient address.")
+                    subject = f"New submission: {form.name}"
+                    body = _render_submission_email(form.name, req.thread_id, form_values)
+                    delivery_result = send_email(subject, body, delivery.email_to)
+                    delivery_status = "sent"
+                elif delivery_type == "sheets":
+                    if not delivery.sheet_id:
+                        raise RuntimeError("Google Sheets delivery requires a sheet ID.")
+                    token = get_oauth_credential(tenant_id, agent_id, "google")
+                    if not token:
+                        raise RuntimeError("Google Sheets is not connected.")
+                    creds = token_to_credentials(token)
+                    refreshed = refresh_credentials_if_needed(creds)
+                    if refreshed:
+                        upsert_oauth_credential(tenant_id, agent_id, "google", refreshed)
+                    headers = ["created_at", "thread_id", "form_id", "form_name"] + list(form_values.keys())
+                    row = [datetime.utcnow().isoformat(), req.thread_id, form.id, form.name] + list(form_values.values())
+                    delivery_result = append_form_submission(creds, delivery.sheet_id, delivery.sheet_tab, row, headers)
+                    delivery_status = "sent"
+                elif delivery_type == "webhook":
+                    if not webhook_url:
+                        raise RuntimeError("Webhook delivery requires a URL.")
+                    tool_to_call = ToolDefinition(
+                        name="form_submission_webhook",
+                        description="Form submission webhook",
+                        http_method="POST",
+                        url=webhook_url,
+                        headers={},
+                        role="submit-form",
+                    )
+                    delivery_result = execute_tool(tool_to_call, form_values, tenant_id, agent_id, version)
+                    delivery_status = "sent"
+                else:
+                    delivery_status = "stored"
+                    delivery_result = {"type": "db", "status": "stored"}
+            except Exception as exc:
+                delivery_status = "error"
+                delivery_result = {"type": delivery_type, "error": str(exc)}
+
+            update_form_submission_delivery(submission_id, delivery_status, delivery_result)
             result["submission_executed"] = True
-            result["submission_url"] = str(form.submission_url)
-            result["submission_response"] = tool_result
+            result["submission_delivery"] = {"type": delivery_type, "status": delivery_status}
             result.setdefault("trace_events", []).append(
                 {
-                    "node": "submission_webhook",
-                    "event": "webhook_call",
-                    "url": str(form.submission_url),
-                    "result": tool_result,
+                    "node": "submission_delivery",
+                    "event": delivery_type,
+                    "status": delivery_status,
+                    "result": delivery_result,
                 }
             )
 
@@ -140,6 +235,7 @@ def chat(req: RuntimeMessageRequest):
         os.getenv("TOOLS_ENABLED", "false").lower() == "true"
         and result.get("completed")
         and not result.get("tool_executed")
+        and not result.get("submission_executed")
         and not (form and form.submission_url)
     ):
         tool_to_call = None
@@ -212,6 +308,18 @@ def _resolve_input_map(input_map: Dict[str, str], form_values: Dict[str, Any]) -
         else:
             resolved[key] = source
     return resolved
+
+
+def _render_submission_email(form_name: str, thread_id: str, form_values: Dict[str, Any]) -> str:
+    lines = [
+        f"Form: {form_name}",
+        f"Thread: {thread_id}",
+        "",
+        "Submission:",
+    ]
+    for key, value in form_values.items():
+        lines.append(f"- {key}: {value}")
+    return "\n".join(lines)
 
 
 def _extract_path(data: Any, path: Optional[str]) -> Any:

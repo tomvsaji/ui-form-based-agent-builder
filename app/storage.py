@@ -10,8 +10,10 @@ from .db_models import (
     AgentVersion,
     AuditLog,
     ChatLog,
+    FormSubmission,
     KnowledgeBase,
     KnowledgeDocument,
+    OAuthCredential,
     ThreadState,
     TraceLog,
 )
@@ -119,6 +121,145 @@ def get_latest_version_payload(tenant_id: str, agent_id: str) -> Optional[Dict[s
         if not found:
             return None
         return {"version": found.version, "config": found.config}
+
+
+def create_form_submission(
+    tenant_id: str,
+    agent_id: str,
+    version: int,
+    thread_id: str,
+    form_id: str,
+    form_name: str,
+    delivery_type: str,
+    payload: Dict[str, Any],
+    delivery_target: Optional[str] = None,
+) -> int:
+    with session_scope() as session:
+        submission = FormSubmission(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            version=version,
+            thread_id=thread_id,
+            form_id=form_id,
+            form_name=form_name,
+            delivery_type=delivery_type,
+            payload=payload,
+            delivery_target=delivery_target,
+            delivery_status="pending",
+        )
+        session.add(submission)
+        session.flush()
+        return int(submission.id)
+
+
+def update_form_submission_delivery(
+    submission_id: int,
+    status: str,
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    with session_scope() as session:
+        stmt = select(FormSubmission).where(FormSubmission.id == submission_id)
+        found = session.execute(stmt).scalars().first()
+        if not found:
+            return
+        found.delivery_status = status
+        found.delivery_result = result
+
+
+def list_form_submissions(
+    tenant_id: str,
+    agent_id: str,
+    form_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    delivery_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    from datetime import datetime
+    from datetime import timedelta
+
+    with session_scope() as session:
+        stmt = select(FormSubmission).where(
+            FormSubmission.tenant_id == tenant_id,
+            FormSubmission.agent_id == agent_id,
+        )
+        if form_id:
+            stmt = stmt.where(FormSubmission.form_id == form_id)
+        if thread_id:
+            stmt = stmt.where(FormSubmission.thread_id == thread_id)
+        if delivery_type:
+            stmt = stmt.where(FormSubmission.delivery_type == delivery_type)
+        if start_date:
+            stmt = stmt.where(FormSubmission.created_at >= datetime.fromisoformat(start_date))
+        if end_date:
+            parsed_end = datetime.fromisoformat(end_date)
+            if len(end_date) == 10:
+                parsed_end = parsed_end + timedelta(days=1) - timedelta(seconds=1)
+            stmt = stmt.where(FormSubmission.created_at <= parsed_end)
+        stmt = stmt.order_by(desc(FormSubmission.created_at)).limit(limit).offset(offset)
+        rows = session.execute(stmt).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "tenant_id": row.tenant_id,
+                "agent_id": row.agent_id,
+                "version": row.version,
+                "thread_id": row.thread_id,
+                "form_id": row.form_id,
+                "form_name": row.form_name,
+                "delivery_type": row.delivery_type,
+                "delivery_target": row.delivery_target,
+                "delivery_status": row.delivery_status,
+                "payload": row.payload,
+                "delivery_result": row.delivery_result,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+
+
+def get_oauth_credential(tenant_id: str, agent_id: str, provider: str) -> Optional[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(OAuthCredential).where(
+            OAuthCredential.tenant_id == tenant_id,
+            OAuthCredential.agent_id == agent_id,
+            OAuthCredential.provider == provider,
+        )
+        found = session.execute(stmt).scalars().first()
+        return found.token if found else None
+
+
+def upsert_oauth_credential(tenant_id: str, agent_id: str, provider: str, token: Dict[str, Any]) -> None:
+    with session_scope() as session:
+        stmt = select(OAuthCredential).where(
+            OAuthCredential.tenant_id == tenant_id,
+            OAuthCredential.agent_id == agent_id,
+            OAuthCredential.provider == provider,
+        )
+        found = session.execute(stmt).scalars().first()
+        if found:
+            found.token = token
+        else:
+            session.add(
+                OAuthCredential(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    provider=provider,
+                    token=token,
+                )
+            )
+
+
+def delete_oauth_credential(tenant_id: str, agent_id: str, provider: str) -> None:
+    with session_scope() as session:
+        stmt = delete(OAuthCredential).where(
+            OAuthCredential.tenant_id == tenant_id,
+            OAuthCredential.agent_id == agent_id,
+            OAuthCredential.provider == provider,
+        )
+        session.execute(stmt)
 
 
 def log_chat(

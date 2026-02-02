@@ -49,6 +49,12 @@ Builder:
 - `GET /api/threads`
 - `GET /api/threads/{thread_id}/messages`
 - `GET /api/traces`
+- `GET /api/submissions`
+- `GET /api/submissions/export`
+- `GET /api/oauth/google/status`
+- `GET /api/oauth/google/start`
+- `GET /api/oauth/google/callback`
+- `POST /api/oauth/google/disconnect`
 - `GET /api/knowledge-bases`
 - `POST /api/knowledge-bases`
 - `POST /api/knowledge-bases/{kb_id}/documents`
@@ -66,6 +72,15 @@ Runtime:
 - Knowledge base upload supports `.txt`, `.md`, and `.pdf` files.
 - LLM routing/extraction uses OpenAI or Azure OpenAI and can be controlled via `LLM_ROUTING_ENABLED` and `LLM_EXTRACTION_ENABLED`.
 - Tool execution is optional and gated by `TOOLS_ENABLED`.
+- Form submissions are stored in Postgres and can be exported from the Builder UI.
+- SMTP delivery uses standard SMTP creds:
+  - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+  - Optional: `SMTP_USE_TLS` (default true), `SMTP_USE_SSL` (default false)
+- Google Sheets delivery uses OAuth:
+  - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+  - `GOOGLE_OAUTH_REDIRECT_URI` (builder API callback URL)
+  - `OAUTH_STATE_SECRET` (random secret for state signing)
+  - Optional: `GOOGLE_OAUTH_SUCCESS_REDIRECT` (post-auth redirect URL)
 - All services are Docker-first and cloud-agnostic.
 
 ## Docs

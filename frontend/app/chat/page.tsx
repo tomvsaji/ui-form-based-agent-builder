@@ -70,6 +70,22 @@ export default function ChatTester() {
     if (dynamic && dynamic.length > 0) return dynamic;
     return currentField.dropdown_options || [];
   }, [currentField, lastState]);
+  const hasActiveForm = Boolean(lastState?.current_form_id);
+
+  const getStatusTone = (text: string) => {
+    const lower = text.toLowerCase();
+    if (lower.includes("failed") || lower.includes("error")) return "error";
+    if (lower.includes("no published") || lower.includes("required") || lower.includes("missing")) return "warning";
+    if (lower.includes("loaded") || lower.includes("processed") || lower.includes("created")) return "success";
+    return "info";
+  };
+
+  const getStatusStyle = (tone: string) => {
+    if (tone === "error") return { background: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" };
+    if (tone === "warning") return { background: "#fffbeb", borderColor: "#fde68a", color: "#92400e" };
+    if (tone === "success") return { background: "#ecfdf5", borderColor: "#bbf7d0", color: "#065f46" };
+    return { background: "#f8fafc", borderColor: "#e2e8f0", color: "#0f172a" };
+  };
 
   const loadForms = async () => {
     try {
@@ -105,8 +121,8 @@ export default function ChatTester() {
     }
   };
 
-  const sendMessage = async () => {
-    const messageToSend = input.trim();
+  const sendMessage = async (override?: string) => {
+    const messageToSend = (override ?? input).trim();
     if (!messageToSend) return;
     const userMsg: ChatTurn = { role: "user", content: messageToSend };
     setLog((prev) => [...prev, userMsg]);
@@ -132,6 +148,12 @@ export default function ChatTester() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const sendCommand = async (command: "cancel" | "complete") => {
+    if (loading) return;
+    const message = command === "cancel" ? "/cancel" : "/complete";
+    await sendMessage(message);
   };
 
   const resetThread = () => {
@@ -214,7 +236,11 @@ export default function ChatTester() {
         </div>
       </header>
 
-      {status && <div className="card" style={{ marginBottom: 12 }}>{status}</div>}
+      {status && (
+        <div className="card" style={{ marginBottom: 12, ...getStatusStyle(getStatusTone(status)) }}>
+          {status}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16 }}>
         <div className="card" style={{ display: "flex", flexDirection: "column", minHeight: 520 }}>
@@ -304,9 +330,17 @@ export default function ChatTester() {
                 placeholder="Type a message"
               />
             </div>
-            <button className="btn" disabled={loading} onClick={sendMessage}>
-              {loading ? "Sending..." : "Send"}
-            </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button className="btn" disabled={loading} onClick={() => void sendMessage()}>
+                {loading ? "Sending..." : "Send"}
+              </button>
+              <button className="btn secondary" disabled={!hasActiveForm || loading} onClick={() => void sendCommand("complete")}>
+                Complete form
+              </button>
+              <button className="btn secondary" disabled={!hasActiveForm || loading} onClick={() => void sendCommand("cancel")}>
+                Cancel form
+              </button>
+            </div>
           </div>
         </div>
 

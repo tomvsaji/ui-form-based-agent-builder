@@ -26,6 +26,10 @@
       "title": "Loan Request",
       "description": "Collect borrower details to submit a loan application.",
       "submission_url": "https://api.example.com/loan/submit",
+      "delivery": {
+        "type": "webhook",
+        "webhook_url": "https://api.example.com/loan/submit"
+      },
       "submission": {
         "type": "api",
         "url": "https://api.example.com/loan/submit",
@@ -131,6 +135,10 @@
       "name": "Support Ticket",
       "description": "Capture support issues in one message.",
       "submission_url": "https://api.example.com/support/submit",
+      "delivery": {
+        "type": "webhook",
+        "webhook_url": "https://api.example.com/support/submit"
+      },
       "mode": "one-shot",
       "field_order": [
         "category",
@@ -184,6 +192,10 @@
       "name": "Book Airline",
       "description": "Get travel details to book tickets for the user.",
       "submission_url": "https://api.example.com/booking/submit",
+      "delivery": {
+        "type": "webhook",
+        "webhook_url": "https://api.example.com/booking/submit"
+      },
       "mode": "step-by-step",
       "field_order": [
         "field_1765382369925",

@@ -109,3 +109,35 @@ class TraceLog(Base):
     trace_id: Mapped[str] = mapped_column(String(128), index=True)
     data: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FormSubmission(Base):
+    __tablename__ = "form_submissions"
+    __table_args__ = ()
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(128), index=True)
+    version: Mapped[int] = mapped_column(Integer, index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), index=True)
+    form_id: Mapped[str] = mapped_column(String(128), index=True)
+    form_name: Mapped[str] = mapped_column(String(256))
+    delivery_type: Mapped[str] = mapped_column(String(32), index=True)
+    payload: Mapped[dict] = mapped_column(JSONB)
+    delivery_target: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    delivery_status: Mapped[str] = mapped_column(String(32), default="pending")
+    delivery_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OAuthCredential(Base):
+    __tablename__ = "oauth_credentials"
+    __table_args__ = (UniqueConstraint("tenant_id", "agent_id", "provider", name="uq_oauth_credentials"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    agent_id: Mapped[str] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    token: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
