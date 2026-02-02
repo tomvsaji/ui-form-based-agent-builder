@@ -25,12 +25,20 @@ type Field = {
   } | null;
   ui?: { placeholder?: string | null; help_text?: string | null; options?: string[] | null } | null;
 };
+type DeliveryConfig = {
+  type: "db" | "email" | "sheets" | "webhook";
+  email_to?: string | null;
+  sheet_id?: string | null;
+  sheet_tab?: string | null;
+  webhook_url?: string | null;
+};
 type Form = {
   id: string;
   name: string;
   title?: string | null;
   description: string;
-  submission_url: string;
+  submission_url?: string | null;
+  delivery?: DeliveryConfig;
   submission?: {
     type: "api" | "tool";
     tool_name?: string | null;
@@ -84,6 +92,18 @@ type KnowledgeBase = { id: number; name: string; description: string; provider: 
 type KnowledgeBaseFile = { filename: string; chunks: number; last_indexed_at?: string | null };
 type KnowledgeBaseChunk = { id: number; content: string; chunk_index?: number | null; created_at?: string | null };
 type PublishedVersion = { version: number; created_at?: string | null };
+type SubmissionRecord = {
+  id: number;
+  created_at?: string | null;
+  form_id: string;
+  form_name: string;
+  thread_id: string;
+  delivery_type: string;
+  delivery_status: string;
+  delivery_target?: string | null;
+  payload: Record<string, unknown>;
+  delivery_result?: Record<string, unknown> | null;
+};
 type PersistenceConfig = {
   storage_backend?: "none" | "postgres" | "mongo" | "cosmos";
   postgres_dsn?: string | null;
@@ -113,7 +133,7 @@ export default function Home() {
   const [selectedFormId, setSelectedFormId] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<"configure" | "test" | "threads" | "traces" | "knowledge">("configure");
+  const [activeTab, setActiveTab] = useState<"configure" | "test" | "threads" | "traces" | "knowledge" | "submissions">("configure");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [threadSearch, setThreadSearch] = useState<string>("");
   const [selectedThreadId, setSelectedThreadId] = useState<string>("");
@@ -134,11 +154,71 @@ export default function Home() {
   const [versionConfigs, setVersionConfigs] = useState<Record<number, Record<string, unknown> | null>>({});
   const [loadingVersions, setLoadingVersions] = useState<boolean>(false);
   const [loadingVersionId, setLoadingVersionId] = useState<number | null>(null);
+  const [submissions, setSubmissions] = useState<SubmissionRecord[]>([]);
+  const [submissionFilters, setSubmissionFilters] = useState<{
+    form_id?: string;
+    thread_id?: string;
+    delivery_type?: string;
+    start_date?: string;
+    end_date?: string;
+  }>({});
+  const [googleConnected, setGoogleConnected] = useState<boolean>(false);
 
   const selectedForm = useMemo(
     () => formsCfg?.forms.find((f) => f.id === selectedFormId) || null,
     [formsCfg, selectedFormId]
   );
+
+  const normalizeFormsConfig = (cfg: FormsConfig): FormsConfig => {
+    return {
+      ...cfg,
+      forms: cfg.forms.map((form) => {
+        if (form.delivery) {
+          const webhook_url = form.delivery.webhook_url || form.submission_url || null;
+          return {
+            ...form,
+            submission_url: form.delivery.type === "webhook" ? webhook_url : form.submission_url,
+            delivery: {
+              ...form.delivery,
+              webhook_url,
+            },
+          };
+        }
+        const inferredType = form.submission_url ? "webhook" : "db";
+        return {
+          ...form,
+          delivery: {
+            type: inferredType,
+            webhook_url: form.submission_url || null,
+          },
+        };
+      }),
+    };
+  };
+
+  const getStatusTone = (text: string) => {
+    const lower = text.toLowerCase();
+    if (lower.includes("failed") || lower.includes("error") || lower.includes("invalid")) return "error";
+    if (lower.includes("required") || lower.includes("missing") || lower.includes("warn")) return "warning";
+    if (
+      lower.includes("saved") ||
+      lower.includes("loaded") ||
+      lower.includes("created") ||
+      lower.includes("deleted") ||
+      lower.includes("published") ||
+      lower.includes("connected")
+    ) {
+      return "success";
+    }
+    return "info";
+  };
+
+  const getStatusStyle = (tone: string) => {
+    if (tone === "error") return { background: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" };
+    if (tone === "warning") return { background: "#fffbeb", borderColor: "#fde68a", color: "#92400e" };
+    if (tone === "success") return { background: "#ecfdf5", borderColor: "#bbf7d0", color: "#065f46" };
+    return { background: "#f8fafc", borderColor: "#e2e8f0", color: "#0f172a" };
+  };
 
   const loadAll = async () => {
     setLoading(true);
@@ -149,7 +229,7 @@ export default function Home() {
         )
       );
       setProject(p);
-      setFormsCfg(f);
+      setFormsCfg(normalizeFormsConfig(f));
       setPersistence(s);
       setLoggingCfg(l ? { ...l, emit_trace_logs: true } : l);
       setKnowledgeCfg(k);
@@ -175,6 +255,10 @@ export default function Home() {
   useEffect(() => {
     if (activeTab === "configure") {
       void loadPublishedVersions();
+      void loadGoogleStatus();
+    }
+    if (activeTab === "submissions") {
+      void loadSubmissions();
     }
   }, [activeTab]);
 
@@ -241,6 +325,67 @@ export default function Home() {
       setMessage(`Failed to load version ${version}: ${String(err)}`);
     } finally {
       setLoadingVersionId(null);
+    }
+  };
+
+  const loadSubmissions = async () => {
+    const params = new URLSearchParams();
+    if (submissionFilters.form_id) params.set("form_id", submissionFilters.form_id);
+    if (submissionFilters.thread_id) params.set("thread_id", submissionFilters.thread_id);
+    if (submissionFilters.delivery_type) params.set("delivery_type", submissionFilters.delivery_type);
+    if (submissionFilters.start_date) params.set("start_date", submissionFilters.start_date);
+    if (submissionFilters.end_date) params.set("end_date", submissionFilters.end_date);
+    try {
+      const res = await fetch(`${API_BASE}/submissions?${params.toString()}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setSubmissions(data.items || []);
+    } catch (err) {
+      setMessage(`Failed to load submissions: ${String(err)}`);
+    }
+  };
+
+  const exportSubmissionsCsv = () => {
+    const params = new URLSearchParams();
+    if (submissionFilters.form_id) params.set("form_id", submissionFilters.form_id);
+    if (submissionFilters.thread_id) params.set("thread_id", submissionFilters.thread_id);
+    if (submissionFilters.delivery_type) params.set("delivery_type", submissionFilters.delivery_type);
+    if (submissionFilters.start_date) params.set("start_date", submissionFilters.start_date);
+    if (submissionFilters.end_date) params.set("end_date", submissionFilters.end_date);
+    window.open(`${API_BASE}/submissions/export?${params.toString()}`, "_blank");
+  };
+
+  const loadGoogleStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/oauth/google/status`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setGoogleConnected(Boolean(data.connected));
+    } catch (err) {
+      setMessage(`Failed to load Google status: ${String(err)}`);
+    }
+  };
+
+  const startGoogleOAuth = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/oauth/google/start`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.auth_url) {
+        window.open(data.auth_url, "_blank", "noopener,noreferrer");
+      }
+    } catch (err) {
+      setMessage(`Failed to start Google OAuth: ${String(err)}`);
+    }
+  };
+
+  const disconnectGoogleOAuth = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/oauth/google/disconnect`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      setGoogleConnected(false);
+    } catch (err) {
+      setMessage(`Failed to disconnect Google: ${String(err)}`);
     }
   };
 
@@ -422,21 +567,22 @@ export default function Home() {
 
   const saveAll = async () => {
     try {
-      const missingWebhook = formsCfg?.forms.find((form) => !form.submission_url?.trim());
+      const missingWebhook = formsCfg?.forms.find((form) => form.delivery?.type === "webhook" && !form.submission_url?.trim());
       if (missingWebhook) {
-        setMessage(`Submission webhook URL required for form: ${missingWebhook.name}`);
+        setMessage(`Webhook URL required for form: ${missingWebhook.name}`);
         return;
       }
       const invalidWebhook = formsCfg?.forms.find((form) => {
+        if (form.delivery?.type !== "webhook") return false;
         try {
-          new URL(form.submission_url);
+          new URL(form.submission_url || "");
           return false;
         } catch {
           return true;
         }
       });
       if (invalidWebhook) {
-        setMessage(`Submission webhook URL must be a valid URL for form: ${invalidWebhook.name}`);
+        setMessage(`Webhook URL must be a valid URL for form: ${invalidWebhook.name}`);
         return;
       }
       setLoading(true);
@@ -483,6 +629,31 @@ export default function Home() {
         field_order: updatedOrder,
         mode: forceStepByStep ? "step-by-step" : form.mode,
       };
+    });
+    setFormsCfg({ ...formsCfg, forms: updatedForms });
+  };
+
+  const updateFormDelivery = (updates: Partial<DeliveryConfig>) => {
+    if (!formsCfg || !selectedForm) return;
+    const updatedForms = formsCfg.forms.map((form) => {
+      if (form.id !== selectedForm.id) return form;
+      const nextDelivery = { ...(form.delivery || { type: "db" }), ...updates };
+      return { ...form, delivery: nextDelivery };
+    });
+    setFormsCfg({ ...formsCfg, forms: updatedForms });
+  };
+
+  const setDeliveryType = (type: DeliveryConfig["type"]) => {
+    if (!formsCfg || !selectedForm) return;
+    const updatedForms = formsCfg.forms.map((form) => {
+      if (form.id !== selectedForm.id) return form;
+      const nextDelivery: DeliveryConfig = { ...(form.delivery || { type: "db" }), type };
+      let submission_url = form.submission_url || null;
+      if (type !== "webhook") {
+        submission_url = null;
+        nextDelivery.webhook_url = null;
+      }
+      return { ...form, delivery: nextDelivery, submission_url };
     });
     setFormsCfg({ ...formsCfg, forms: updatedForms });
   };
@@ -552,7 +723,8 @@ export default function Home() {
       mode: "step-by-step",
       field_order: [],
       fields: [],
-      submission_url: "",
+      submission_url: null,
+      delivery: { type: "db" },
     };
     const updated = { ...formsCfg, forms: [...formsCfg.forms, newForm] };
     setFormsCfg(updated);
@@ -659,7 +831,11 @@ export default function Home() {
         </div>
       </header>
 
-      {message && <div className="card" style={{ marginBottom: 12 }}>{message}</div>}
+      {message && (
+        <div className="card" style={{ marginBottom: 12, ...getStatusStyle(getStatusTone(message)) }}>
+          {message}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16, alignItems: "start" }}>
         <aside className="card" style={{ position: "sticky", top: 24 }}>
@@ -675,6 +851,9 @@ export default function Home() {
             </button>
             <button className="btn secondary" onClick={() => { setActiveTab("traces"); void loadThreads(); void loadTraces(); }}>
               Inspect traces
+            </button>
+            <button className="btn secondary" onClick={() => { setActiveTab("submissions"); void loadSubmissions(); }}>
+              Submissions
             </button>
             <button className="btn secondary" onClick={() => { setActiveTab("knowledge"); void loadKnowledgeBases(); }}>
               Knowledge base
@@ -828,20 +1007,117 @@ export default function Home() {
               ))}
             </div>
             {selectedForm && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <input
-                  className="w-full"
-                  value={selectedForm.name}
-                  onChange={(e) => upsertForm({ name: e.target.value })}
-                  placeholder="Form name"
-                />
-                <textarea
-                  className="w-full"
-                  value={selectedForm.description}
-                  onChange={(e) => upsertForm({ description: e.target.value })}
-                  placeholder="Description"
-                />
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div className="border rounded p-3 space-y-2" style={{ background: "#f8fafc" }}>
+                  <div className="text-sm font-medium">Basics</div>
+                  <input
+                    className="w-full"
+                    value={selectedForm.name}
+                    onChange={(e) => upsertForm({ name: e.target.value })}
+                    placeholder="Form name"
+                  />
+                  <textarea
+                    className="w-full"
+                    value={selectedForm.description}
+                    onChange={(e) => upsertForm({ description: e.target.value })}
+                    placeholder="Description"
+                  />
+                </div>
+                <div className="border rounded p-3 space-y-2">
+                  <div className="text-sm font-medium">Delivery</div>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name={`delivery-${selectedForm.id}`}
+                        checked={(selectedForm.delivery?.type || "db") === "db"}
+                        onChange={() => setDeliveryType("db")}
+                      />
+                      Store in Builder (default)
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name={`delivery-${selectedForm.id}`}
+                        checked={selectedForm.delivery?.type === "email"}
+                        onChange={() => setDeliveryType("email")}
+                      />
+                      Email me
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name={`delivery-${selectedForm.id}`}
+                        checked={selectedForm.delivery?.type === "sheets"}
+                        onChange={() => setDeliveryType("sheets")}
+                      />
+                      Google Sheets
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name={`delivery-${selectedForm.id}`}
+                        checked={selectedForm.delivery?.type === "webhook"}
+                        onChange={() => setDeliveryType("webhook")}
+                      />
+                      Webhook (advanced)
+                    </label>
+                  </div>
+                  {(selectedForm.delivery?.type || "db") === "email" && (
+                    <input
+                      className="w-full"
+                      placeholder="Recipient email"
+                      value={selectedForm.delivery?.email_to || ""}
+                      onChange={(e) => updateFormDelivery({ email_to: e.target.value })}
+                    />
+                  )}
+                  {(selectedForm.delivery?.type || "db") === "sheets" && (
+                    <div className="space-y-2">
+                      <input
+                        className="w-full"
+                        placeholder="Google Sheet ID"
+                        value={selectedForm.delivery?.sheet_id || ""}
+                        onChange={(e) => updateFormDelivery({ sheet_id: e.target.value })}
+                      />
+                      <input
+                        className="w-full"
+                        placeholder="Sheet tab (optional, default Sheet1)"
+                        value={selectedForm.delivery?.sheet_tab || ""}
+                        onChange={(e) => updateFormDelivery({ sheet_tab: e.target.value })}
+                      />
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-slate-600">
+                          Google connection: {googleConnected ? "Connected" : "Not connected"}
+                        </span>
+                        {!googleConnected ? (
+                          <button className="btn secondary" onClick={startGoogleOAuth}>
+                            Connect Google
+                          </button>
+                        ) : (
+                          <button className="btn secondary" onClick={disconnectGoogleOAuth}>
+                            Disconnect
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {(selectedForm.delivery?.type || "db") === "webhook" && (
+                    <input
+                      className="w-full"
+                      placeholder="Webhook URL"
+                      value={selectedForm.submission_url || selectedForm.delivery?.webhook_url || ""}
+                      onChange={(e) => {
+                        const value = e.target.value || null;
+                        updateFormDelivery({ webhook_url: value });
+                        upsertForm({ submission_url: value });
+                      }}
+                    />
+                  )}
+                  <div className="text-sm text-slate-600">
+                    Submissions are always stored in Builder for reporting and CSV export.
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
                   <select
                     value={selectedForm.mode}
                     onChange={(e) => upsertForm({ mode: e.target.value as Form["mode"] })}
@@ -855,13 +1131,6 @@ export default function Home() {
                       Dropdown fields require step-by-step mode.
                     </div>
                   )}
-                  <input
-                    value={selectedForm.submission_url || ""}
-                    onChange={(e) => upsertForm({ submission_url: e.target.value })}
-                    placeholder="Submission webhook URL"
-                    required
-                  />
-                  <div className="text-sm text-slate-600">Required. Runtime calls this URL when the form is completed.</div>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <h3 style={{ fontWeight: 600, margin: 0 }}>Fields (drag via arrows)</h3>
@@ -869,7 +1138,8 @@ export default function Home() {
                     + Add field
                   </button>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div className="border rounded p-3" style={{ background: "#f8fafc" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   {selectedForm.field_order.map((fname) => {
                     const field = selectedForm.fields.find((f) => f.name === fname);
                     if (!field) return null;
@@ -963,6 +1233,7 @@ export default function Home() {
                       </div>
                     );
                   })}
+                  </div>
                 </div>
               </div>
             )}
@@ -1292,6 +1563,108 @@ export default function Home() {
                     );
                   })}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "submissions" && (
+            <div className="card space-y-2">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Submissions</h2>
+                <button className="btn secondary" onClick={loadSubmissions}>
+                  Refresh
+                </button>
+              </div>
+              <p className="text-sm text-slate-600">Filter stored submissions and export the current view to CSV.</p>
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  value={submissionFilters.form_id || ""}
+                  onChange={(e) => setSubmissionFilters({ ...submissionFilters, form_id: e.target.value || undefined })}
+                >
+                  <option value="">All forms</option>
+                  {formsCfg?.forms.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={submissionFilters.delivery_type || ""}
+                  onChange={(e) =>
+                    setSubmissionFilters({ ...submissionFilters, delivery_type: e.target.value || undefined })
+                  }
+                >
+                  <option value="">All delivery types</option>
+                  <option value="db">Builder</option>
+                  <option value="email">Email</option>
+                  <option value="sheets">Google Sheets</option>
+                  <option value="webhook">Webhook</option>
+                </select>
+                <input
+                  placeholder="Thread id"
+                  value={submissionFilters.thread_id || ""}
+                  onChange={(e) => setSubmissionFilters({ ...submissionFilters, thread_id: e.target.value || undefined })}
+                />
+                <input
+                  type="date"
+                  value={submissionFilters.start_date || ""}
+                  onChange={(e) => setSubmissionFilters({ ...submissionFilters, start_date: e.target.value || undefined })}
+                />
+                <input
+                  type="date"
+                  value={submissionFilters.end_date || ""}
+                  onChange={(e) => setSubmissionFilters({ ...submissionFilters, end_date: e.target.value || undefined })}
+                />
+              </div>
+              <div className="flex gap-2">
+                <button className="btn secondary" onClick={loadSubmissions}>
+                  Apply filters
+                </button>
+                <button className="btn secondary" onClick={exportSubmissionsCsv}>
+                  Download CSV
+                </button>
+              </div>
+              <div className="space-y-2">
+                {submissions.length === 0 && <div className="text-sm text-slate-600">No submissions yet.</div>}
+                {submissions.map((item) => (
+                  <details key={item.id} className="border rounded p-2">
+                    <summary className="cursor-pointer text-sm font-medium">
+                      {item.form_name} · {item.delivery_type} · {item.delivery_status}
+                      {item.created_at ? ` · ${item.created_at}` : ""}
+                    </summary>
+                    <div className="space-y-2" style={{ marginTop: 8 }}>
+                      <div className="text-sm text-slate-600">Thread: {item.thread_id}</div>
+                      {item.delivery_target && (
+                        <div className="text-sm text-slate-600">Target: {item.delivery_target}</div>
+                      )}
+                      <div className="border rounded p-2">
+                        <div className="text-sm text-slate-600" style={{ marginBottom: 6 }}>
+                          Form values
+                        </div>
+                        {Object.keys(item.payload || {}).length === 0 ? (
+                          <div className="text-sm text-slate-600">No values captured.</div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2 text-sm">
+                            {Object.entries(item.payload || {}).map(([key, value]) => (
+                              <div key={`${item.id}-${key}`} className="border rounded p-2">
+                                <div className="text-slate-600">{key}</div>
+                                <div>{typeof value === "string" ? value : JSON.stringify(value)}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {item.delivery_result && (
+                        <div className="border rounded p-2">
+                          <div className="text-sm text-slate-600" style={{ marginBottom: 6 }}>
+                            Delivery result
+                          </div>
+                          <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(item.delivery_result, null, 2)}</pre>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                ))}
               </div>
             </div>
           )}

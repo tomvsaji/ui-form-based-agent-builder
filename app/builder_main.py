@@ -1,24 +1,38 @@
+import csv
+import json
+import hashlib
 import logging
 import os
-import hashlib
-from typing import Dict
+from io import StringIO
+from typing import Dict, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import FormsConfig
+from .google_oauth import (
+    build_google_flow,
+    build_oauth_state,
+    credentials_to_token,
+    parse_oauth_state,
+)
 from .seed import load_seed_config
 from .storage import (
     get_agent_id,
     get_draft_config,
     get_tenant_id,
     get_thread_messages,
+    get_oauth_credential,
+    list_form_submissions,
     list_knowledge_bases,
     list_threads,
     list_traces,
     list_versions,
     publish_config,
+    delete_oauth_credential,
     upsert_draft_config,
+    upsert_oauth_credential,
     create_knowledge_base,
     add_kb_document,
     search_kb_documents,
@@ -140,6 +154,142 @@ def list_trace_logs(thread_id: str | None = None):
     tenant_id = get_tenant_id()
     agent_id = get_agent_id()
     return {"traces": list_traces(tenant_id, agent_id, thread_id=thread_id)}
+
+
+@app.get("/submissions")
+def list_submissions(
+    form_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    delivery_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    return {
+        "items": list_form_submissions(
+            tenant_id,
+            agent_id,
+            form_id=form_id,
+            thread_id=thread_id,
+            delivery_type=delivery_type,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+    }
+
+
+@app.get("/submissions/export")
+def export_submissions(
+    form_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    delivery_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    items = list_form_submissions(
+        tenant_id,
+        agent_id,
+        form_id=form_id,
+        thread_id=thread_id,
+        delivery_type=delivery_type,
+        start_date=start_date,
+        end_date=end_date,
+        limit=1000,
+        offset=0,
+    )
+    output = StringIO()
+    writer = csv.writer(output)
+    headers = [
+        "id",
+        "created_at",
+        "form_id",
+        "form_name",
+        "thread_id",
+        "delivery_type",
+        "delivery_status",
+        "delivery_target",
+        "payload",
+    ]
+    writer.writerow(headers)
+    for item in items:
+        writer.writerow(
+            [
+                item.get("id"),
+                item.get("created_at"),
+                item.get("form_id"),
+                item.get("form_name"),
+                item.get("thread_id"),
+                item.get("delivery_type"),
+                item.get("delivery_status"),
+                item.get("delivery_target"),
+                json.dumps(item.get("payload", {})),
+            ]
+        )
+    output.seek(0)
+    response = StreamingResponse(iter([output.getvalue()]), media_type="text/csv")
+    response.headers["Content-Disposition"] = "attachment; filename=submissions.csv"
+    return response
+
+
+@app.get("/oauth/google/status")
+def google_oauth_status():
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    token = get_oauth_credential(tenant_id, agent_id, "google")
+    return {"connected": bool(token)}
+
+
+@app.get("/oauth/google/start")
+def google_oauth_start():
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
+    if not redirect_uri:
+        raise HTTPException(status_code=500, detail="GOOGLE_OAUTH_REDIRECT_URI not configured")
+    flow = build_google_flow(redirect_uri)
+    state = build_oauth_state(tenant_id, agent_id)
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=state,
+    )
+    return {"auth_url": auth_url}
+
+
+@app.get("/oauth/google/callback")
+def google_oauth_callback(code: str, state: str):
+    try:
+        tenant_id, agent_id = parse_oauth_state(state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    redirect_uri = os.getenv("GOOGLE_OAUTH_REDIRECT_URI")
+    if not redirect_uri:
+        raise HTTPException(status_code=500, detail="GOOGLE_OAUTH_REDIRECT_URI not configured")
+    flow = build_google_flow(redirect_uri)
+    flow.fetch_token(code=code)
+    token = credentials_to_token(flow.credentials)
+    upsert_oauth_credential(tenant_id, agent_id, "google", token)
+    success_url = os.getenv("GOOGLE_OAUTH_SUCCESS_REDIRECT")
+    if success_url:
+        return RedirectResponse(success_url)
+    return HTMLResponse("<html><body>Google Sheets connected. You can close this tab.</body></html>")
+
+
+@app.post("/oauth/google/disconnect")
+def google_oauth_disconnect():
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    delete_oauth_credential(tenant_id, agent_id, "google")
+    return {"status": "ok"}
 
 
 @app.get("/forms")
