@@ -1,10 +1,27 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { agents } from "@/lib/mock-data";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+
+type AgentItem = {
+  id: string;
+  name: string;
+  description: string;
+  status: "Active" | "Draft" | "Error";
+  model: string;
+  last_run?: string | null;
+  updated_by?: string | null;
+};
+
+type UsageStats = {
+  requests_7d: number;
+  sessions_7d: number;
+};
 
 const statusStyles: Record<string, string> = {
   Active: "bg-emerald-100 text-emerald-700",
@@ -13,7 +30,30 @@ const statusStyles: Record<string, string> = {
 };
 
 export default function AgentsPage() {
-  const agent = agents[0];
+  const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [usage, setUsage] = useState<UsageStats | null>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [agentsRes, usageRes] = await Promise.all([
+          fetch(`${API_BASE}/agents`),
+          fetch(`${API_BASE}/stats/usage`),
+        ]);
+        if (agentsRes.ok) {
+          const data = await agentsRes.json();
+          setAgents(data.items || []);
+        }
+        if (usageRes.ok) {
+          const data = await usageRes.json();
+          setUsage({ requests_7d: data.requests_7d || 0, sessions_7d: data.sessions_7d || 0 });
+        }
+      } catch {
+        setAgents([]);
+      }
+    };
+    void load();
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -30,8 +70,17 @@ export default function AgentsPage() {
             <CardTitle className="text-sm font-medium text-slate-500">Requests (7d)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-semibold text-slate-900">48.2k</div>
-            <p className="text-xs text-emerald-600">+12% vs last week</p>
+            <div className="text-2xl font-semibold text-slate-900">{usage ? usage.requests_7d : "—"}</div>
+            <p className="text-xs text-slate-500">From chat logs</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-slate-500">Sessions (7d)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-semibold text-slate-900">{usage ? usage.sessions_7d : "—"}</div>
+            <p className="text-xs text-slate-500">Distinct threads</p>
           </CardContent>
         </Card>
         <Card>
@@ -39,26 +88,19 @@ export default function AgentsPage() {
             <CardTitle className="text-sm font-medium text-slate-500">Active agents</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-semibold text-slate-900">6</div>
-            <p className="text-xs text-slate-500">2 in staging</p>
+            <div className="text-2xl font-semibold text-slate-900">{agents.length}</div>
+            <p className="text-xs text-slate-500">Configured agents</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-slate-500">Avg. latency</CardTitle>
+            <CardTitle className="text-sm font-medium text-slate-500">Latest activity</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-semibold text-slate-900">412ms</div>
-            <p className="text-xs text-slate-500">p95 response time</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-slate-500">Escalations</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-semibold text-slate-900">3</div>
-            <p className="text-xs text-rose-600">2 failed handoffs</p>
+            <div className="text-2xl font-semibold text-slate-900">
+              {agents[0]?.last_run ? new Date(agents[0].last_run).toLocaleDateString() : "—"}
+            </div>
+            <p className="text-xs text-slate-500">Most recent run</p>
           </CardContent>
         </Card>
       </div>
@@ -77,8 +119,8 @@ export default function AgentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {agent && (
-                  <tr className="border-t border-slate-200 hover:bg-slate-50">
+                {agents.map((agent) => (
+                  <tr key={agent.id} className="border-t border-slate-200 hover:bg-slate-50">
                     <td className="px-6 py-4">
                       <Link href={`/agents/${agent.id}`} className="font-semibold text-slate-900">
                         {agent.name}
@@ -88,11 +130,13 @@ export default function AgentsPage() {
                     <td className="px-6 py-4">
                       <Badge className={statusStyles[agent.status]}>{agent.status}</Badge>
                     </td>
-                    <td className="px-6 py-4 text-slate-600">{agent.model}</td>
-                    <td className="px-6 py-4 text-slate-600">{agent.lastRun}</td>
-                    <td className="px-6 py-4 text-slate-600">{agent.lastUpdatedBy}</td>
+                    <td className="px-6 py-4 text-slate-600">{agent.model || "—"}</td>
+                    <td className="px-6 py-4 text-slate-600">
+                      {agent.last_run ? new Date(agent.last_run).toLocaleString() : "—"}
+                    </td>
+                    <td className="px-6 py-4 text-slate-600">{agent.updated_by || "—"}</td>
                   </tr>
-                )}
+                ))}
               </tbody>
             </table>
           </div>
