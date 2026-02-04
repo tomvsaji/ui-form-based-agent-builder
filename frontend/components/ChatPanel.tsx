@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bot, Loader2, RefreshCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -9,32 +9,56 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 
-const initialMessages = [
-  {
-    id: 1,
-    role: "assistant",
-    content: "Hi! I'm Atlas, your AI agent. Ask me to summarize the latest incident report or run a dry test.",
-    time: "9:41 AM",
-  },
-  {
-    id: 2,
-    role: "user",
-    content: "Can you show me the current routing policy?",
-    time: "9:42 AM",
-  },
-  {
-    id: 3,
-    role: "assistant",
-    content: "```json\n{\n  \"routing\": \"priority-first\",\n  \"escalation\": {\n    \"threshold\": 0.72,\n    \"channel\": \"pager\"\n  }\n}\n```",
-    time: "9:42 AM",
-  },
-];
-
 const shortcuts = ["/debug", "/explain", "/summarize logs"];
 
 export function ChatPanel({ agentName }: { agentName: string }) {
   const [message, setMessage] = useState("");
-  const [isTyping, setIsTyping] = useState(true);
+  const [messages, setMessages] = useState(() => [
+    {
+      id: 1,
+      role: "assistant",
+      content: `Hi! I'm ${agentName}. Ask me to summarize the latest incident report or run a dry test.`,
+      time: "Just now",
+    },
+  ]);
+  const [isTyping, setIsTyping] = useState(false);
+
+  const cannedResponses = useMemo(
+    () => [
+      "Here’s a quick summary: the last incident was resolved in 18 minutes with no customer impact.",
+      "Routing policy is set to priority-first with a 0.72 escalation threshold to pager.",
+      "I can run a dry test on the newest workflow if you want. Share the trigger conditions.",
+    ],
+    []
+  );
+
+  useEffect(() => {
+    setMessages((prev) =>
+      prev.map((item) =>
+        item.id === 1 ? { ...item, content: `Hi! I'm ${agentName}. Ask me to summarize the latest incident report or run a dry test.` } : item
+      )
+    );
+  }, [agentName]);
+
+  const sendMessage = (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setMessages((prev) => [
+      ...prev,
+      { id: prev.length + 1, role: "user", content: trimmed, time: timestamp },
+    ]);
+    setMessage("");
+    setIsTyping(true);
+    window.setTimeout(() => {
+      const reply = cannedResponses[Math.floor(Math.random() * cannedResponses.length)];
+      setMessages((prev) => [
+        ...prev,
+        { id: prev.length + 1, role: "assistant", content: reply, time: timestamp },
+      ]);
+      setIsTyping(false);
+    }, 700);
+  };
 
   return (
     <Card className="flex h-full min-h-[720px] flex-col border-slate-200 bg-white">
@@ -52,7 +76,22 @@ export function ChatPanel({ agentName }: { agentName: string }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => toast({ title: "Session reset", description: "Chat history cleared." })}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setMessages([
+                {
+                  id: 1,
+                  role: "assistant",
+                  content: `Hi! I'm ${agentName}. Ask me to summarize the latest incident report or run a dry test.`,
+                  time: "Just now",
+                },
+              ]);
+              setIsTyping(false);
+              toast({ title: "Session reset", description: "Chat history cleared." });
+            }}
+          >
             <RefreshCcw className="h-4 w-4" />
             Reset session
           </Button>
@@ -60,7 +99,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
-        {initialMessages.map((msg) => (
+        {messages.map((msg) => (
           <div key={msg.id} className={cn("flex flex-col gap-1", msg.role === "user" ? "items-end" : "items-start")}>
             <div
               className={cn(
@@ -83,7 +122,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
         {isTyping && (
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Atlas is thinking...
+            {agentName} is thinking...
           </div>
         )}
       </div>
@@ -91,7 +130,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
       <div className="border-t px-5 py-4">
         <div className="flex flex-wrap gap-2 pb-3">
           {shortcuts.map((shortcut) => (
-            <Button key={shortcut} variant="outline" size="sm" onClick={() => setMessage(shortcut)}>
+            <Button key={shortcut} variant="outline" size="sm" onClick={() => sendMessage(shortcut)}>
               {shortcut}
             </Button>
           ))}
@@ -106,9 +145,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
           <Button
             className="self-end"
             onClick={() => {
-              toast({ title: "Message queued", description: "Streaming response..." });
-              setMessage("");
-              setIsTyping(true);
+              sendMessage(message);
             }}
           >
             Send

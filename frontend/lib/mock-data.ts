@@ -18,7 +18,7 @@ export const tools: AgentTool[] = [
     id: "web-search",
     name: "Web search",
     description: "Query the web for fresh information.",
-    enabled: true,
+    enabled: false,
     badge: "beta",
   },
   {
@@ -45,23 +45,23 @@ export const tools: AgentTool[] = [
 export const knowledgeSources: KnowledgeSource[] = [
   {
     id: "kb-1",
-    name: "Postgres: agent_kb (pgvector)",
-    type: "Database",
+    name: "pgvector: Customer playbooks.pdf",
+    type: "Document",
     status: "Indexed",
     updatedAt: "Today, 9:12 AM",
   },
   {
     id: "kb-2",
-    name: "Postgres: runbooks (pgvector)",
-    type: "Database",
-    status: "Indexing",
-    updatedAt: "Today, 9:18 AM",
+    name: "pgvector: Escalation policies.md",
+    type: "Document",
+    status: "Indexed",
+    updatedAt: "Yesterday, 4:05 PM",
   },
   {
     id: "kb-3",
-    name: "Postgres: incidents_archive (pgvector)",
-    type: "Database",
-    status: "Error",
-    updatedAt: "Yesterday, 6:42 PM",
+    name: "pgvector: SLA guardrails.txt",
+    type: "Document",
+    status: "Indexed",
+    updatedAt: "Monday, 2:31 PM",
   },
 ];
