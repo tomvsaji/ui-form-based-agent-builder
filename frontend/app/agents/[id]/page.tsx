@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Copy, PlayCircle, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 import { ChatPanel } from "@/components/ChatPanel";
 import { BuilderPanel } from "@/components/BuilderPanel";
@@ -14,7 +14,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -36,7 +35,6 @@ const knowledgeStatusStyles: Record<string, string> = {
 
 export default function AgentDetailPage({ params }: { params: { id: string } }) {
   const agent = useMemo(() => agents.find((item) => item.id === params.id) ?? agents[0], [params.id]);
-  const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [temperature, setTemperature] = useState([0.4]);
 
   return (
@@ -51,10 +49,6 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <p className="text-sm text-slate-500">{agent.description}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline">
-              <PlayCircle className="h-4 w-4" />
-              Test in chat
-            </Button>
             <Button variant="secondary">Duplicate</Button>
             <Button variant="destructive">
               <Trash2 className="h-4 w-4" />
@@ -120,17 +114,26 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                   <Input defaultValue={agent.tags.join(", ")} />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-600">Model</label>
-                  <Select defaultValue={agent.model}>
+                  <label className="text-sm font-medium text-slate-600">Model provider</label>
+                  <Select defaultValue="openai">
                     <SelectTrigger>
-                      <SelectValue placeholder="Select model" />
+                      <SelectValue placeholder="Select provider" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="gpt-4.1">gpt-4.1</SelectItem>
-                      <SelectItem value="gpt-4o">gpt-4o</SelectItem>
-                      <SelectItem value="gpt-4o-mini">gpt-4o-mini</SelectItem>
+                      <SelectItem value="openai">OpenAI</SelectItem>
+                      <SelectItem value="azure-openai">Azure OpenAI</SelectItem>
+                      <SelectItem value="anthropic" disabled>
+                        Claude (soon)
+                      </SelectItem>
+                      <SelectItem value="google" disabled>
+                        Google (soon)
+                      </SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-600">Model</label>
+                  <Input defaultValue={agent.model} placeholder="e.g. gpt-4o-mini" />
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <label className="text-sm font-medium text-slate-600">Temperature</label>
@@ -185,45 +188,11 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                     </div>
                     <div className="flex items-center gap-3">
                       <Switch defaultChecked={tool.enabled} disabled={!tool.enabled} />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedTool(tool.id)}
-                        disabled={!tool.enabled}
-                      >
-                        Configure
-                      </Button>
                     </div>
                   </div>
                 ))}
               </CardContent>
             </Card>
-
-            <Sheet open={Boolean(selectedTool)} onOpenChange={(open) => !open && setSelectedTool(null)}>
-              <SheetContent side="right" className="w-[420px]">
-                <SheetHeader>
-                  <SheetTitle>Tool configuration</SheetTitle>
-                  <SheetDescription>Edit the JSON payload and permissions.</SheetDescription>
-                </SheetHeader>
-                <div className="mt-6 space-y-4">
-                  <div className="rounded-lg border bg-slate-50 p-3 text-xs text-slate-600">
-                    Tool ID: {selectedTool}
-                  </div>
-                  <Textarea defaultValue={`{\n  "rate_limit": 120,\n  "timeout_ms": 8000,\n  "retry": true\n}`} className="min-h-[200px] font-mono" />
-                  <Button
-                    className="w-full"
-                    onClick={() =>
-                      toast({
-                        title: "Tool updated",
-                        description: "Configuration saved successfully.",
-                      })
-                    }
-                  >
-                    Save configuration
-                  </Button>
-                </div>
-              </SheetContent>
-            </Sheet>
           </TabsContent>
 
           <TabsContent value="knowledge" className="space-y-4">
@@ -270,7 +239,17 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                 </Dialog>
               </CardHeader>
               <CardContent className="space-y-4">
-                {knowledgeSources.map((source) => (
+                <div className="rounded-lg border border-dashed p-4">
+                  <div className="text-sm font-semibold text-slate-900">Upload documents</div>
+                  <p className="mt-1 text-xs text-slate-500">Upload PDFs or markdown files to the pgvector store.</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Input type="file" className="max-w-xs" />
+                    <Button variant="outline">Upload</Button>
+                  </div>
+                </div>
+                {knowledgeSources
+                  .filter((source) => source.status === "Indexed")
+                  .map((source) => (
                   <div key={source.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4">
                     <div>
                       <div className="text-sm font-semibold text-slate-900">{source.name}</div>
@@ -287,7 +266,7 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
             <Card>
               <CardHeader>
                 <CardTitle>Runtime settings</CardTitle>
-                <CardDescription>Control logging, webhooks, and environment values.</CardDescription>
+                <CardDescription>Control logging and OpenAI credentials.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -307,56 +286,37 @@ export default function AgentDetailPage({ params }: { params: { id: string } }) 
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-600">Webhook URL</label>
-                    <Input defaultValue="https://hooks.nimbus.ai/agents/atlas" />
+                    <Input placeholder="Webhook support coming soon" disabled />
                   </div>
                 </div>
 
-                <div>
-                  <div className="text-sm font-medium text-slate-600">Environment variables</div>
-                  <div className="mt-3 overflow-hidden rounded-lg border">
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                        <tr>
-                          <th className="px-4 py-2 text-left">Key</th>
-                          <th className="px-4 py-2 text-left">Value</th>
-                          <th className="px-4 py-2 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[
-                          { key: "SLACK_WEBHOOK", value: "https://hooks.slack.com/xyz" },
-                          { key: "PAGERDUTY_KEY", value: "pd_live_...2a" },
-                        ].map((row) => (
-                          <tr key={row.key} className="border-t">
-                            <td className="px-4 py-3 text-slate-700">{row.key}</td>
-                            <td className="px-4 py-3 text-slate-500">{row.value}</td>
-                            <td className="px-4 py-3 text-right">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() =>
-                                  toast({
-                                    title: "Copied",
-                                    description: `${row.key} copied to clipboard.`,
-                                  })
-                                }
-                              >
-                                <Copy className="h-4 w-4" />
-                              </Button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                <div className="space-y-4 rounded-lg border bg-slate-50 p-4">
+                  <div>
+                    <div className="text-sm font-medium text-slate-700">OpenAI credentials</div>
+                    <p className="text-xs text-slate-500">Store the API keys used by this agent runtime.</p>
                   </div>
-                </div>
-
-                <div className="rounded-lg border bg-slate-50 p-4">
-                  <div className="text-sm font-medium text-slate-700">API Keys</div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">sk-live-92fc••••</Badge>
-                    <Badge variant="secondary">sk-live-18bc••••</Badge>
-                    <Button variant="outline" size="sm">Rotate keys</Button>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-600">OpenAI API key</label>
+                      <Input placeholder="sk-..." type="password" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-600">OpenAI organization (optional)</label>
+                      <Input placeholder="org_..." />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        toast({
+                          title: "OpenAI credentials saved",
+                          description: "Runtime config updated.",
+                        })
+                      }
+                    >
+                      Save credentials
+                    </Button>
                   </div>
                 </div>
               </CardContent>
