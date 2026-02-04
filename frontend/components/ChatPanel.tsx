@@ -10,9 +10,31 @@ import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 
 const shortcuts = ["/debug", "/explain", "/summarize logs"];
+const RUNTIME_BASE = process.env.NEXT_PUBLIC_RUNTIME_BASE || "/runtime";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
+
+type FormField = {
+  name: string;
+  label: string;
+  type: "text" | "number" | "date" | "boolean" | "dropdown" | "enum" | "file";
+  dropdown_options?: string[];
+};
+type FormConfig = {
+  id: string;
+  field_order: string[];
+  fields: FormField[];
+};
+type FormsConfig = { forms: FormConfig[] };
+type RuntimeState = {
+  current_form_id?: string | null;
+  current_step_index?: number;
+  awaiting_field?: boolean;
+  field_options?: Record<string, string[]>;
+};
 
 export function ChatPanel({ agentName }: { agentName: string }) {
   const [message, setMessage] = useState("");
+  const [threadId, setThreadId] = useState(() => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now())));
   const [messages, setMessages] = useState(() => [
     {
       id: 1,
@@ -22,6 +44,9 @@ export function ChatPanel({ agentName }: { agentName: string }) {
     },
   ]);
   const [isTyping, setIsTyping] = useState(false);
+  const [sessionLabel, setSessionLabel] = useState("Session: Draft preview");
+  const [formsCfg, setFormsCfg] = useState<FormsConfig | null>(null);
+  const [lastState, setLastState] = useState<RuntimeState | null>(null);
 
   const cannedResponses = useMemo(
     () => [
@@ -33,6 +58,20 @@ export function ChatPanel({ agentName }: { agentName: string }) {
   );
 
   useEffect(() => {
+    const loadForms = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/config/forms`);
+        if (!res.ok) throw new Error(await res.text());
+        const data = (await res.json()) as FormsConfig;
+        setFormsCfg(data);
+      } catch (err) {
+        toast({ title: "Failed to load forms", description: String(err) });
+      }
+    };
+    void loadForms();
+  }, []);
+
+  useEffect(() => {
     setMessages((prev) =>
       prev.map((item) =>
         item.id === 1 ? { ...item, content: `Hi! I'm ${agentName}. Ask me to summarize the latest incident report or run a dry test.` } : item
@@ -40,7 +79,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
     );
   }, [agentName]);
 
-  const sendMessage = (content: string) => {
+  const sendMessage = async (content: string) => {
     const trimmed = content.trim();
     if (!trimmed) return;
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -50,15 +89,72 @@ export function ChatPanel({ agentName }: { agentName: string }) {
     ]);
     setMessage("");
     setIsTyping(true);
-    window.setTimeout(() => {
-      const reply = cannedResponses[Math.floor(Math.random() * cannedResponses.length)];
+    try {
+      const res = await fetch(`${RUNTIME_BASE}/chat/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: threadId, message: trimmed }),
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = await res.json();
+      setLastState(data?.state || null);
+      const reply = data?.reply || cannedResponses[Math.floor(Math.random() * cannedResponses.length)];
       setMessages((prev) => [
         ...prev,
         { id: prev.length + 1, role: "assistant", content: reply, time: timestamp },
       ]);
+      setSessionLabel("Session: Draft preview");
+    } catch (err) {
+      try {
+        const fallback = await fetch(`${RUNTIME_BASE}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, message: trimmed }),
+        });
+        if (!fallback.ok) {
+          throw new Error(await fallback.text());
+        }
+        const data = await fallback.json();
+        setLastState(data?.state || null);
+        const reply = data?.reply || cannedResponses[Math.floor(Math.random() * cannedResponses.length)];
+        setMessages((prev) => [
+          ...prev,
+          { id: prev.length + 1, role: "assistant", content: reply, time: timestamp },
+        ]);
+        setSessionLabel("Session: Latest published");
+      } catch (fallbackErr) {
+        setLastState(null);
+        setMessages((prev) => [
+          ...prev,
+          { id: prev.length + 1, role: "assistant", content: "I hit a problem reaching the runtime. Try again in a moment.", time: timestamp },
+        ]);
+        toast({ title: "Runtime error", description: String(fallbackErr || err) });
+      }
+    } finally {
       setIsTyping(false);
-    }, 700);
+    }
   };
+
+  const currentField = useMemo(() => {
+    if (!formsCfg || !lastState?.awaiting_field || !lastState.current_form_id) return null;
+    const form = formsCfg.forms.find((f) => f.id === lastState.current_form_id);
+    if (!form) return null;
+    const idx = lastState.current_step_index ?? 0;
+    const fieldName = form.field_order[idx];
+    if (!fieldName) return null;
+    return form.fields.find((f) => f.name === fieldName) || null;
+  }, [formsCfg, lastState]);
+
+  const optionButtons = useMemo(() => {
+    if (!currentField || !lastState?.awaiting_field) return [];
+    if (currentField.type !== "dropdown" && currentField.type !== "enum") return [];
+    const runtimeOptions = lastState.field_options?.[currentField.name] || [];
+    const staticOptions = currentField.dropdown_options || [];
+    const merged = Array.from(new Set([...runtimeOptions, ...staticOptions]));
+    return merged.filter(Boolean);
+  }, [currentField, lastState]);
 
   return (
     <Card className="flex h-full min-h-[720px] flex-col border-slate-200 bg-white">
@@ -72,7 +168,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
           </div>
           <div>
             <div className="text-sm font-semibold text-slate-900">{agentName}</div>
-            <div className="text-xs text-slate-500">Session: Live preview</div>
+            <div className="text-xs text-slate-500">{sessionLabel}</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -88,6 +184,7 @@ export function ChatPanel({ agentName }: { agentName: string }) {
                   time: "Just now",
                 },
               ]);
+              setThreadId(globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()));
               setIsTyping(false);
               toast({ title: "Session reset", description: "Chat history cleared." });
             }}
@@ -128,6 +225,15 @@ export function ChatPanel({ agentName }: { agentName: string }) {
       </div>
 
       <div className="border-t px-5 py-4">
+        {optionButtons.length > 0 && (
+          <div className="flex flex-wrap gap-2 pb-3">
+            {optionButtons.map((opt) => (
+              <Button key={opt} variant="outline" size="sm" onClick={() => sendMessage(opt)}>
+                {opt}
+              </Button>
+            ))}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 pb-3">
           {shortcuts.map((shortcut) => (
             <Button key={shortcut} variant="outline" size="sm" onClick={() => sendMessage(shortcut)}>

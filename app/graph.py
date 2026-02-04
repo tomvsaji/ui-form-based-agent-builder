@@ -266,6 +266,43 @@ def build_graph(
     workflow = StateGraph(AgentState)
     memory = MemorySaver()
 
+    def _looks_like_question(message: str) -> bool:
+        msg = (message or "").strip().lower()
+        if not msg:
+            return False
+        if msg.endswith("?"):
+            return True
+        starters = (
+            "what",
+            "why",
+            "how",
+            "when",
+            "where",
+            "who",
+            "can you",
+            "could you",
+            "should",
+            "do i",
+            "is there",
+            "tell me",
+            "explain",
+            "help",
+        )
+        return msg.startswith(starters)
+
+    def _should_route_general_while_in_form(state: AgentState, message: str) -> bool:
+        if not state.get("current_form_id") or not state.get("awaiting_field"):
+            return False
+        if not _looks_like_question(message):
+            return False
+        form = forms_config.form_by_id(state.get("current_form_id") or "")
+        if not form:
+            return False
+        idx = state.get("current_step_index", 0)
+        if idx >= len(form.field_order):
+            return False
+        return True
+
     def ingest_message(state: AgentState) -> AgentState:
         state = _ensure_defaults(dict(state))
         _trace_node_event(
@@ -305,7 +342,73 @@ def build_graph(
                 "event",
                 {"event": "form_reset_after_completion"},
             )
-        if state.get("current_form_id"):
+
+        last_message = state.get("last_user_message") or ""
+        if state.get("current_form_id") and last_message:
+            try:
+                intent_id, meta = select_intent(
+                    last_message,
+                    [{"id": i.id, "name": i.name, "description": i.description} for i in forms_config.intents],
+                )
+                chosen_intent = next((i for i in forms_config.intents if i.id == intent_id), None)
+                _trace_node_event(
+                    state,
+                    "intent_router",
+                    "event",
+                    {"event": "llm_call", "llm": meta, "mode": "in_form"},
+                )
+                state["llm_usage"] = meta.get("usage", {})
+            except Exception as exc:
+                state["reply"] = f"LLM intent routing failed: {exc}"
+                _trace_node_event(
+                    state,
+                    "intent_router",
+                    "end",
+                    {"output": {"reply": state.get("reply"), "error": "llm_failed"}},
+                )
+                return state
+
+            if not chosen_intent:
+                if _should_route_general_while_in_form(state, last_message):
+                    state["general_query"] = True
+                    _trace_node_event(
+                        state,
+                        "intent_router",
+                        "end",
+                        {"output": {"general_query": True, "in_form": True}},
+                    )
+                    if state.get("current_form_id") and state.get("awaiting_field"):
+                        state["reply"] = f"{state.get('reply')} You can continue the form anytime."
+                    return state
+                _trace_node_event(
+                    state,
+                    "intent_router",
+                    "end",
+                    {"output": {"current_form_id": state.get("current_form_id"), "skipped": True}},
+                )
+                return state
+
+            lower_message = last_message.lower()
+            if any(token in lower_message for token in ("switch", "start over", "new form", "different form")):
+                state["current_intent"] = chosen_intent.id
+                state["current_form_id"] = chosen_intent.target_form
+                state["current_step_index"] = 0
+                state["form_values"] = {}
+                state["awaiting_field"] = False
+                _trace_node_event(
+                    state,
+                    "intent_router",
+                    "end",
+                    {
+                        "output": {
+                            "current_intent": chosen_intent.id,
+                            "current_form_id": chosen_intent.target_form,
+                            "switched": True,
+                        }
+                    },
+                )
+                return state
+
             _trace_node_event(
                 state,
                 "intent_router",
@@ -314,7 +417,6 @@ def build_graph(
             )
             return state
 
-        last_message = state.get("last_user_message") or ""
         if not forms_config.intents:
             state["reply"] = "No intents configured."
             _trace_node_event(
@@ -385,7 +487,7 @@ def build_graph(
             "start",
             {"input": {"message": state.get("last_user_message")}},
         )
-        if state.get("current_form_id") or state.get("reply"):
+        if state.get("reply"):
             _trace_node_event(
                 state,
                 "general_responder",
@@ -479,6 +581,8 @@ def build_graph(
 
         intent_names = ", ".join([i.name for i in forms_config.intents])
         state["reply"] = f"Hi! What would you like to do? I can help with: {intent_names}."
+        if state.get("current_form_id") and state.get("awaiting_field"):
+            state["reply"] = f"{state.get('reply')} You can continue the form anytime."
         _trace_node_event(
             state,
             "general_responder",

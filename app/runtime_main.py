@@ -15,6 +15,7 @@ from .google_sheets import append_form_submission
 from .notifications import send_email
 from .storage import (
     create_form_submission,
+    get_draft_config,
     get_agent_id,
     get_latest_version_payload,
     get_tenant_id,
@@ -86,7 +87,35 @@ def chat(req: RuntimeMessageRequest):
         version = payload["version"]
     if not config:
         raise HTTPException(status_code=404, detail="No published config found")
+    return _run_chat(req, config, version, tenant_id, agent_id)
 
+
+@app.post("/chat/preview", response_model=ChatResponse)
+def chat_preview(req: RuntimeMessageRequest):
+    if not req.thread_id:
+        raise HTTPException(status_code=400, detail="thread_id is required.")
+    tenant_id = get_tenant_id()
+    agent_id = get_agent_id()
+    draft = get_draft_config(tenant_id, agent_id)
+    if draft:
+        config = draft
+        version = 0
+    else:
+        payload = get_latest_version_payload(tenant_id, agent_id)
+        if not payload:
+            raise HTTPException(status_code=404, detail="No published config found")
+        config = payload["config"]
+        version = payload["version"]
+    return _run_chat(req, config, version, tenant_id, agent_id)
+
+
+def _run_chat(
+    req: RuntimeMessageRequest,
+    config: Dict[str, Any],
+    version: int,
+    tenant_id: str,
+    agent_id: str,
+) -> ChatResponse:
     forms_config = FormsConfig.model_validate(config.get("forms", {}))
     tools_config = ToolsConfig.model_validate(config.get("tools", {"tools": []}))
     knowledge_config = KnowledgeBaseConfig.model_validate(config.get("knowledge", {}))

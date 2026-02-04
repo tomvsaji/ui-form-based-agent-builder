@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, desc, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 
 from .db import session_scope
 from .db_models import (
@@ -97,6 +98,68 @@ def list_versions(tenant_id: str, agent_id: str) -> List[Dict[str, Any]]:
             {"version": row.version, "created_at": row.created_at.isoformat() if row.created_at else None}
             for row in session.execute(stmt)
         ]
+
+
+def get_usage_metrics(tenant_id: str, agent_id: Optional[str] = None) -> Dict[str, int]:
+    since = datetime.utcnow() - timedelta(days=7)
+    with session_scope() as session:
+        base_filters = [ChatLog.tenant_id == tenant_id]
+        if agent_id:
+            base_filters.append(ChatLog.agent_id == agent_id)
+        user_requests = session.execute(
+            select(func.count())
+            .select_from(ChatLog)
+            .where(*base_filters, ChatLog.created_at >= since, ChatLog.role == "user")
+        ).scalar_one()
+        sessions = session.execute(
+            select(func.count(func.distinct(ChatLog.thread_id)))
+            .select_from(ChatLog)
+            .where(*base_filters, ChatLog.created_at >= since)
+        ).scalar_one()
+        total_sessions = session.execute(
+            select(func.count(func.distinct(ChatLog.thread_id)))
+            .select_from(ChatLog)
+            .where(*base_filters)
+        ).scalar_one()
+    return {
+        "requests_7d": int(user_requests or 0),
+        "sessions_7d": int(sessions or 0),
+        "total_sessions": int(total_sessions or 0),
+    }
+
+
+def list_agents(tenant_id: str) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        drafts = session.execute(select(AgentDraft).where(AgentDraft.tenant_id == tenant_id)).scalars().all()
+        results: List[Dict[str, Any]] = []
+        for draft in drafts:
+            latest = session.execute(
+                select(AgentVersion)
+                .where(AgentVersion.tenant_id == tenant_id, AgentVersion.agent_id == draft.agent_id)
+                .order_by(desc(AgentVersion.version))
+                .limit(1)
+            ).scalars().first()
+            last_log = session.execute(
+                select(ChatLog.created_at)
+                .where(ChatLog.tenant_id == tenant_id, ChatLog.agent_id == draft.agent_id)
+                .order_by(desc(ChatLog.created_at))
+                .limit(1)
+            ).scalars().first()
+            project = (draft.config or {}).get("project", {})
+            name = project.get("project_name") or draft.agent_id
+            description = project.get("system_message") or ""
+            results.append(
+                {
+                    "id": draft.agent_id,
+                    "name": name,
+                    "description": description,
+                    "status": "Active" if latest else "Draft",
+                    "model": "",
+                    "last_run": last_log.isoformat() if last_log else None,
+                    "updated_by": "system",
+                }
+            )
+        return results
 
 
 def get_version_config(tenant_id: str, agent_id: str, version: int) -> Optional[Dict[str, Any]]:

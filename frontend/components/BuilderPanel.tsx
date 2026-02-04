@@ -484,18 +484,7 @@ export function BuilderPanel() {
 
       {message && <div className="card" style={{ marginBottom: 12 }}>{message}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 16, alignItems: "start" }}>
-        <aside className="card" style={{ position: "sticky", top: 24 }}>
-          <div className="space-y-2">
-            <button className="btn secondary" onClick={() => setActiveTab("configure")}>
-              Configure flow
-            </button>
-            <button className="btn secondary" onClick={() => setActiveTab("test")}>
-              Test bot
-            </button>
-          </div>
-        </aside>
-
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, alignItems: "start" }}>
         <div>
           {activeTab === "configure" && (
             <>
@@ -844,13 +833,6 @@ export function BuilderPanel() {
         )}
       </div>
             </>
-          )}
-
-          {activeTab === "test" && (
-            <div className="card">
-              <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Test the bot</h2>
-              <p>Use the chat panel on the right to test responses.</p>
-            </div>
           )}
 
           {activeTab === "threads" && (
