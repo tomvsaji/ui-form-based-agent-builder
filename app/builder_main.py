@@ -93,23 +93,23 @@ def healthcheck():
 def runtime_settings():
     return {
         "POSTGRES_USER": os.getenv("POSTGRES_USER", ""),
-        "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
         "POSTGRES_DB": os.getenv("POSTGRES_DB", ""),
-        "POSTGRES_DSN": os.getenv("POSTGRES_DSN", ""),
-        "REDIS_URL": os.getenv("REDIS_URL", ""),
         "TENANT_ID": os.getenv("TENANT_ID", ""),
         "AGENT_ID": os.getenv("AGENT_ID", ""),
         "CACHE_TTL_SECONDS": int(os.getenv("CACHE_TTL_SECONDS", "900")),
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
         "EMBEDDING_MODEL": os.getenv("EMBEDDING_MODEL", ""),
         "LLM_MODEL": os.getenv("LLM_MODEL", ""),
         "LLM_ROUTING_ENABLED": _env_bool("LLM_ROUTING_ENABLED", False),
         "LLM_EXTRACTION_ENABLED": _env_bool("LLM_EXTRACTION_ENABLED", False),
         "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-        "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY", ""),
         "AZURE_OPENAI_API_VERSION": os.getenv("AZURE_OPENAI_API_VERSION", ""),
         "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
         "AZURE_OPENAI_EMBEDDING_DEPLOYMENT": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", ""),
+        "POSTGRES_PASSWORD_SET": bool(os.getenv("POSTGRES_PASSWORD")),
+        "POSTGRES_DSN_SET": bool(os.getenv("POSTGRES_DSN")),
+        "REDIS_URL_SET": bool(os.getenv("REDIS_URL")),
+        "OPENAI_API_KEY_SET": bool(os.getenv("OPENAI_API_KEY")),
+        "AZURE_OPENAI_API_KEY_SET": bool(os.getenv("AZURE_OPENAI_API_KEY")),
     }
 
 
@@ -124,7 +124,9 @@ def usage_stats():
 @app.get("/agents")
 def list_agents_endpoint():
     tenant_id = get_tenant_id()
-    agents = list_agents(tenant_id)
+    agent_id = get_agent_id()
+    _ensure_draft_config()
+    agents = [agent for agent in list_agents(tenant_id) if agent.get("id") == agent_id]
     model = os.getenv("LLM_MODEL", "")
     for agent in agents:
         agent["model"] = model

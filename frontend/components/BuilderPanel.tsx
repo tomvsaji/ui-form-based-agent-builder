@@ -245,12 +245,10 @@ export function BuilderPanel() {
 
   const saveAll = async () => {
     try {
-      const missingWebhook = formsCfg?.forms.find((form) => !form.submission_url?.trim());
-      if (missingWebhook) {
-        setMessage(`Submission webhook URL required for form: ${missingWebhook.name}`);
-        return;
-      }
       const invalidWebhook = formsCfg?.forms.find((form) => {
+        if (!form.submission_url?.trim()) {
+          return false;
+        }
         try {
           new URL(form.submission_url);
           return false;
@@ -354,14 +352,14 @@ export function BuilderPanel() {
 
   const upsertForm = (updates: Partial<Form>) => {
     if (!formsCfg || !selectedForm) return;
-    const updatedForms = formsCfg.forms.map((form) => {
+    const updatedForms: Form[] = formsCfg.forms.map((form) => {
       if (form.id !== selectedForm.id) return form;
       const hasDropdown = form.fields.some((f) => f.type === "dropdown" || f.type === "enum");
       if (hasDropdown && updates.mode && updates.mode !== "step-by-step") {
         setMessage("Dropdown fields require step-by-step mode.");
         return { ...form, mode: "step-by-step" };
       }
-      return { ...form, ...updates };
+      return { ...form, ...updates } as Form;
     });
     setFormsCfg({ ...formsCfg, forms: updatedForms });
   };
